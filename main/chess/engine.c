@@ -1,3 +1,10 @@
+// The AMALGAMATED_BUILD guard wraps the whole file, as everywhere else in
+// main/: under CONFIG_AMALGAMATED_BUILD every .c is also compiled standalone,
+// and would clash with the copy amalgamated.c pulls in. amalgamated.c #undefs
+// the macro before including us, so exactly one copy is real.
+// AMALGAMATED_BUILD is never defined on the host, so the perft tests are
+// unaffected.
+#ifndef AMALGAMATED_BUILD
 #include "engine.h"
 
 #include <string.h>
@@ -703,7 +710,10 @@ static void sort_moves(const ch_pos_t* pos, ch_move_t* moves, int n)
 
 // Search only captures until the position is quiet, so the engine does not
 // stop mid-exchange and misread a hanging piece as material won.
-static int quiesce(ch_pos_t* pos, int alpha, int beta)
+//
+// `depth` bounds the extension: see CH_QUIESCE_MAX. Stopping early only costs
+// accuracy in wild positions, whereas running out of stack on device is fatal.
+static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
 {
     const int stand_pat = evaluate(pos);
     if (stand_pat >= beta) {
@@ -711,6 +721,9 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta)
     }
     if (stand_pat > alpha) {
         alpha = stand_pat;
+    }
+    if (depth <= 0) {
+        return alpha;
     }
 
     ch_move_t moves[CH_MAX_MOVES];
@@ -723,7 +736,7 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta)
         }
         ch_undo_t undo;
         ch_make(pos, &moves[i], &undo);
-        const int score = -quiesce(pos, -beta, -alpha);
+        const int score = -quiesce(pos, -beta, -alpha, depth - 1);
         ch_unmake(pos, &undo);
 
         if (score >= beta) {
@@ -739,7 +752,7 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta)
 static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
 {
     if (depth <= 0) {
-        return quiesce(pos, alpha, beta);
+        return quiesce(pos, alpha, beta, CH_QUIESCE_MAX);
     }
 
     ch_move_t moves[CH_MAX_MOVES];
@@ -794,3 +807,5 @@ bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best)
     }
     return true;
 }
+
+#endif // AMALGAMATED_BUILD

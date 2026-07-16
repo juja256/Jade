@@ -34,6 +34,12 @@ void __wrap_abort(void);
 #if !defined(CONFIG_LIBJADE) || defined(CONFIG_LIBJADE_CAMERA)
 #include "./camera.c"
 #endif
+#ifdef CONFIG_CHESS_APP
+#include "./chess/engine.c"
+#include "./chess/chess_board.c"
+#include "./chess/chess_game.c"
+#include "./chess/chess_ui.c"
+#endif // CONFIG_CHESS_APP
 #include "./descriptor.c"
 #include "./display.c"
 #include "./display_hw.c"

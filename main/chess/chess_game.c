@@ -1,3 +1,4 @@
+#ifndef AMALGAMATED_BUILD
 #include "chess_game.h"
 
 #include <stdio.h>
@@ -341,13 +342,15 @@ chg_action_t chg_select(chg_game_t* game)
     return CHG_ACT_NONE;
 }
 
-void chg_engine_played(chg_game_t* game, const ch_move_t* move)
+chg_action_t chg_engine_played(chg_game_t* game, const ch_move_t* move)
 {
     if (game->state != CHG_ENGINE_THINK) {
-        return;
+        return CHG_ACT_NONE;
     }
     apply(game, move);
-    (void)enter_turn(game);
+    // In practice this is never CHG_ACT_ENGINE again -- the engine plays one
+    // colour -- but returning it keeps the caller from having to know that.
+    return enter_turn(game);
 }
 
 const char* chg_status(const chg_game_t* game)
@@ -386,3 +389,5 @@ const char* chg_status(const chg_game_t* game)
         return "Your move";
     }
 }
+
+#endif // AMALGAMATED_BUILD

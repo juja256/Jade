@@ -1,3 +1,4 @@
+#ifndef AMALGAMATED_BUILD
 #include "chess_board.h"
 
 #include <string.h>
@@ -420,3 +421,5 @@ void chb_move_san(const ch_pos_t* pos, const ch_move_t* move, char* out, size_t 
         out[copy] = '\0';
     }
 }
+
+#endif // AMALGAMATED_BUILD

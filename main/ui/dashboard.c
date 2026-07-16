@@ -284,6 +284,9 @@ gui_activity_t* make_uninitialised_settings_activity(void)
               { .txt = "USB Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_USBSTORAGE },
 #endif
               { .txt = "BIP39 Passphrase", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BIP39_PASSPHRASE },
+#ifdef CONFIG_CHESS_APP
+              { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
+#endif
               { .txt = "Settings", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_PREFS } };
 
     return make_menu_activity("Options", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
@@ -297,6 +300,9 @@ gui_activity_t* make_locked_settings_activity(void)
     btn_data_t menubtns[]
         = { { .txt = "BIP39 Passphrase", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BIP39_PASSPHRASE },
               { .txt = "Device", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE },
+#ifdef CONFIG_CHESS_APP
+              { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
+#endif
               { .txt = "Temporary Signer", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_TEMPORARY_WALLET_LOGIN } };
 
     return make_menu_activity("Options", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
@@ -311,6 +317,9 @@ gui_activity_t* make_unlocked_settings_activity(void)
         { .txt = "Device", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE },
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(CONFIG_HAS_BATTERY)
         { .txt = "USB Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_USBSTORAGE },
+#endif
+#ifdef CONFIG_CHESS_APP
+        { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
 #endif
         { .txt = "Authentication", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_AUTHENTICATION } };
 

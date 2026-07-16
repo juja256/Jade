@@ -1,6 +1,7 @@
 #ifndef AMALGAMATED_BUILD
 #include "../bcur.h"
 #include "../button_events.h"
+#include "../chess/chess_ui.h"
 #include "../descriptor.h"
 #include "../display.h"
 #include "../input.h"
@@ -2200,6 +2201,15 @@ static void handle_settings(const bool startup_menu)
             // Change to 'Device' menu
             act = make_device_info_activity();
             break;
+
+#ifdef CONFIG_CHESS_APP
+        case BTN_SETTINGS_CHESS:
+            // Blocking sub-flow, as with handle_legal(): runs its own activity
+            // and returns when the user exits. The loop re-shows `act` on the
+            // next iteration, which also frees the chess activity.
+            chess_ui_run();
+            break;
+#endif
 
         case BTN_SETTINGS_PREFS:
         case BTN_SETTINGS_DISPLAY_EXIT:

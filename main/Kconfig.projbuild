@@ -740,4 +740,22 @@ menu "Blockstream Jade"
         help
             Port to expose Wi-Fi logging on.
 
+    config CHESS_APP
+        bool "Chess app"
+        default n
+        help
+            Add a chess app, playable from the Options menu against an
+            on-device engine.
+
+            This is a personal/DIY feature and is off by default. It links a
+            chess engine into the wallet firmware, which is new attack surface
+            with no security benefit, and it perturbs reproducible builds.
+            Do not enable it on a device holding funds.
+
+            Deliberately has no BOARD_TYPE dependency: libjade defines no
+            BOARD_TYPE_* symbol and qemu is BOARD_TYPE_QEMU_LARGER, so gating
+            on the board would make the app unbuildable in the two places
+            development actually happens. The board is a fixed 160x160 centred
+            in whatever display is available.
+
 endmenu

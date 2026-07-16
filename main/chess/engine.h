@@ -48,6 +48,13 @@
 // A position can have at most ~218 legal moves; 256 is a safe bound.
 #define CH_MAX_MOVES 256
 
+// Maximum plies the quiescence search may extend beyond the nominal depth.
+// Quiescence is otherwise unbounded, and every frame holds a CH_MAX_MOVES
+// array, so on a fixed FreeRTOS stack an unbounded extension is a real
+// overflow risk rather than a theoretical one. Callers size their stack from
+// CH_QUIESCE_MAX + their search depth.
+#define CH_QUIESCE_MAX 6
+
 // Move flags
 #define CH_MF_CAPTURE 1
 #define CH_MF_EP 2

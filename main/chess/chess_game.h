@@ -98,8 +98,8 @@ void chg_next(chg_game_t* game);
 chg_action_t chg_select(chg_game_t* game);
 
 // Hand back the engine's move. `move` must be legal in the current position.
-// Valid only in CHG_ENGINE_THINK.
-void chg_engine_played(chg_game_t* game, const ch_move_t* move);
+// Valid only in CHG_ENGINE_THINK; a no-op returning CHG_ACT_NONE otherwise.
+chg_action_t chg_engine_played(chg_game_t* game, const ch_move_t* move);
 
 // Current ring entry, or NULL when the ring is empty.
 const chg_entry_t* chg_current(const chg_game_t* game);
