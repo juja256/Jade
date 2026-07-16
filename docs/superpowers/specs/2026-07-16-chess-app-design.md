@@ -55,20 +55,24 @@ already exists in game state.
 
 ### File layout
 
+**As built** (deviates from the original three-unit sketch; see As-built notes below):
+
 ```
 main/chess/
-  micromax.c      # engine, near-verbatim port + a root move-enumeration hook
-  micromax.h      # engine interface
-  chess_board.c   # game state, move list, SAN formatting, board -> Picture rendering
-  chess_board.h
-  chess_ui.c      # activity construction, legal-move cycling state machine
-  chess_ui.h
+  engine.c/.h        # 0x88 board, legal move generation, make/unmake, search
+  chess_board.c/.h   # game state, SAN, board -> raw RGB565 buffer
+  chess_game.c/.h    # legal-move cycling state machine
+  chess_ui.c/.h      # Jade activity, input pump, engine task
+  test/              # host-only: perft_test, search_test, render_test, game_test
 ```
 
-Three units with distinct jobs: `micromax.c` decides what moves exist and which one the
-engine plays; `chess_board.c` owns game state and turns it into pixels; `chess_ui.c` owns
-the activity and input. `chess_ui.c` never touches engine internals — it consumes the move
-list `chess_board.c` exposes.
+Four units, each with one job. The first three depend on nothing outside libc and are
+fully tested on the host; only `chess_ui.c` touches the firmware. `chess_ui.c` never
+reaches into engine internals — it pumps prev/next/select into `chess_game.c` and paints
+what comes out.
+
+`test/` is a subdirectory, and `SRC_DIRS` is not recursive, so the test files (each with
+its own `main()`) are never compiled into the firmware.
 
 ### Build integration
 
@@ -221,9 +225,9 @@ long-press constraint above.
 
 ## Engine integration
 
-**micro-Max** (H.G. Muller): a complete 0x88 alpha-beta searcher with hash table in ~2KB
-of dense C. Sufficient to beat most casual players. Ported near-verbatim; deliberately not
-"cleaned up", since its density is load-bearing and rewriting it invites subtle bugs.
+**As built: a purpose-written 0x88 engine, not micro-Max.** See As-built notes below for
+why. Alpha-beta with quiescence, MVV-LVA move ordering, material and piece-square
+evaluation, and a real `ch_gen_legal()` API.
 
 ### Deep recursion
 
@@ -242,21 +246,17 @@ The device auto-sleeps. Pondering a move for two minutes would blank the screen 
 `idletimer_set_min_timeout_secs()` (`main/idletimer.h:8`) holds it awake for the duration
 of the activity, restored on exit.
 
-### The main risk: no move-generation API
+### The main risk: no move-generation API — RESOLVED
 
-**micro-Max has no `list_legal_moves()`.** It is one recursive function `D()` that searches
-and generates moves inseparably. The entire UI depends on having that list. Options:
+The original plan was micro-Max, whose headline problem was that it has **no
+`list_legal_moves()`**: it is one recursive function `D()` that searches and generates
+moves inseparably, while the entire UI depends on having that list. The mitigations on the
+table were all unpleasant — hook the root move loop, duplicate the move generator, or
+brute-force ~4000 (from,to) probes.
 
-1. **Hook the root move loop** with a callback when enumerating at depth 0. Correct answer:
-   one source of truth, and the engine's own legality notion drives the UI.
-2. *Independent move generator for the UI.* Duplicated logic that will drift from the engine
-   on castling, en passant and pin edge cases. Rejected.
-3. *Brute-force all (from,to) pairs* past the engine's legality check. Crude, ~4000 cheap
-   probes, but viable as a first cut.
-
-**Plan:** ship (3) to get playable quickly, then move to (1). This is the part of the
-project most likely to consume disproportionate time, and it is called out here so that is
-a decision rather than a surprise.
+Writing the engine instead of porting one **dissolves this risk entirely**: `ch_gen_legal()`
+is a first-class API, is the single source of truth for legality, and is what both the
+search and the UI ring consume. There is nothing left to mitigate.
 
 ## Error handling
 
@@ -325,8 +325,70 @@ formatted automatically and CI requires a clean `git diff`. micro-Max's dense fo
 Each phase is independently verifiable, and phases 1–5 need no hardware at all. Phases 1 and
 2 do not even need the ESP-IDF toolchain.
 
+## As-built notes
+
+Where the implementation departed from this design, and why.
+
+### Engine: purpose-written, not micro-Max
+
+micro-Max was chosen for size, but flash was never the constraint (4024K partition), and it
+carried the project's headline risk: no move-generation API. Two further problems settled
+it: reproducing its famously dense ~2KB verbatim risks subtly-wrong constants in code that
+is thoroughly unpleasant to debug, and its density is exactly what `format.sh` would
+reformat anyway.
+
+A written engine is ~700 lines, exposes `ch_gen_legal()` directly — dissolving the main
+risk — and is provable: **all 26 perft cases pass**, matching published node counts
+(startpos depth 5 = 4,865,609; kiwipete depth 4 = 4,085,603; positions 3-6). It sits behind
+a clean interface, so micro-Max could still be swapped in.
+
+### Four units, not three
+
+The state machine was split from `chess_ui.c` into `chess_game.c`. Beside the Jade GUI calls
+it would have been untestable off-device; alone it is libc-only and fully exercised on the
+host, including a complete 224-move game played through the public API to checkmate.
+
+### Rendering into a raw buffer, not a `Picture`
+
+`chb_render()` takes a `uint16_t*`, not a Jade `Picture`. Since `color_t` is `#define`d to
+`uint16_t` (`display.h:8`) this costs nothing at the boundary, and it keeps `chess_board.c`
+host-testable — rendered boards are dumped to PPM and inspected by eye, which is the only
+way to judge 20px sprites.
+
+### Traps found during implementation
+
+Worth recording; each cost real time to find and would have cost much more to debug on
+device.
+
+- **Panel pixels are byte-swapped RGB565.** `display.c` defines `TFT_RED` as `0x00F8`, not
+  the textbook `0xF800`. Textbook RGB565 renders with red and blue transposed.
+- **`gui_update_picture()` stores the pointer, not a copy** (`node->picture->picture =
+  picture`), and the GUI task dereferences it later from the *other core*. A `Picture` local
+  to a render function is a use-after-return. This is what `camera.c`'s "stack-allocated
+  'pic'" comment is warning about.
+- **`max_wait == 0` means "wait forever"** in `sync_wait_event()` (`utils/event.c`), the
+  opposite of the usual FreeRTOS convention. `main/smoketest.c` is the precedent for raw
+  `GUI_EVENT` handling.
+- **Quiescence search must be bounded** (`CH_QUIESCE_MAX`). Unbounded is fine on a host but
+  every frame holds a 1KB move array, so on a fixed FreeRTOS stack it is an overflow risk.
+  The search stack is sized from depth + `CH_QUIESCE_MAX`.
+- **Amalgamation puts 132 `.c` files in one translation unit**, so generic `static` names
+  (`apply`, `repaint`, `evaluate`) can collide. Checked; none do.
+
+### Verification status
+
+| Area | Status |
+|---|---|
+| Move generation | **Proven** — 26/26 perft cases, clean under ASan+UBSan |
+| Search, terminal states | **Tested** — mate-in-1, stalemate, draws, 120-ply self-play |
+| Rendering, SAN | **Tested** — images inspected; SAN incl. both disambiguation forms |
+| State machine | **Tested** — full 224-move game via public API |
+| `chess_ui.c` | **Not run** — syntax/type-checked against stub headers only |
+| Firmware build, flash, device | **Not done** — no ESP-IDF or docker available |
+| `format.sh` | **Not run** — clang-format-19 absent; CI may reformat |
+
 ## Open questions
 
-None blocking. Deferred decisions: search depth (tune on device once playable), and whether
-`[Resign]`/`[Exit]` live in the `PIECE_SELECT` ring or a header button (resolve when the
-ring length is known in practice).
+None blocking. Deferred: search depth (`CHESS_SEARCH_DEPTH`, currently 3 — tune on device),
+and whether `[Resign]`/`[Exit]` stay in the `PIECE_SELECT` ring or move to a header button
+(the opening ring is 12 entries, which is comfortable, so the ring is fine for now).
