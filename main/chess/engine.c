@@ -1,0 +1,796 @@
+#include "engine.h"
+
+#include <string.h>
+
+// 0x88 move offsets. Square arithmetic is done in int to avoid uint8_t wrap;
+// CH_ONBOARD() then rejects anything that stepped off the board.
+static const int knight_off[8] = { -33, -31, -18, -14, 14, 18, 31, 33 };
+static const int king_off[8] = { -17, -16, -15, -1, 1, 15, 16, 17 };
+static const int bishop_off[4] = { -17, -15, 15, 17 };
+static const int rook_off[4] = { -16, -1, 1, 16 };
+
+// Castling rights to clear when a piece moves from, or lands on, a square.
+// Indexing by both `from` and `to` handles king moves, rook moves and -- the
+// classic bug -- a rook being captured on its home square, in one expression.
+static const uint8_t castle_mask[128] = {
+    [0x00] = CH_CASTLE_WQ,
+    [0x04] = CH_CASTLE_WK | CH_CASTLE_WQ,
+    [0x07] = CH_CASTLE_WK,
+    [0x70] = CH_CASTLE_BQ,
+    [0x74] = CH_CASTLE_BK | CH_CASTLE_BQ,
+    [0x77] = CH_CASTLE_BK,
+};
+
+void ch_init(ch_pos_t* pos)
+{
+    static const uint8_t back[8] = { CH_ROOK, CH_KNIGHT, CH_BISHOP, CH_QUEEN, CH_KING, CH_BISHOP, CH_KNIGHT, CH_ROOK };
+
+    memset(pos, 0, sizeof(*pos));
+    for (int f = 0; f < 8; ++f) {
+        pos->board[CH_SQ(f, 0)] = back[f] | CH_WHITE;
+        pos->board[CH_SQ(f, 1)] = CH_PAWN | CH_WHITE;
+        pos->board[CH_SQ(f, 6)] = CH_PAWN | CH_BLACK;
+        pos->board[CH_SQ(f, 7)] = back[f] | CH_BLACK;
+    }
+    pos->side = CH_WHITE;
+    pos->castle = CH_CASTLE_WK | CH_CASTLE_WQ | CH_CASTLE_BK | CH_CASTLE_BQ;
+    pos->ep = CH_NO_EP;
+    pos->halfmove = 0;
+    pos->fullmove = 1;
+    pos->king_sq[CH_CIDX(CH_WHITE)] = CH_SQ(4, 0);
+    pos->king_sq[CH_CIDX(CH_BLACK)] = CH_SQ(4, 7);
+}
+
+bool ch_from_fen(ch_pos_t* pos, const char* fen)
+{
+    memset(pos, 0, sizeof(*pos));
+    pos->ep = CH_NO_EP;
+
+    const char* p = fen;
+    int rank = 7;
+    int file = 0;
+
+    for (; *p && *p != ' '; ++p) {
+        if (*p == '/') {
+            if (file != 8) {
+                return false;
+            }
+            --rank;
+            file = 0;
+            if (rank < 0) {
+                return false;
+            }
+            continue;
+        }
+        if (*p >= '1' && *p <= '8') {
+            file += *p - '0';
+            if (file > 8) {
+                return false;
+            }
+            continue;
+        }
+
+        uint8_t type;
+        switch (*p | 0x20) {
+        case 'p':
+            type = CH_PAWN;
+            break;
+        case 'n':
+            type = CH_KNIGHT;
+            break;
+        case 'b':
+            type = CH_BISHOP;
+            break;
+        case 'r':
+            type = CH_ROOK;
+            break;
+        case 'q':
+            type = CH_QUEEN;
+            break;
+        case 'k':
+            type = CH_KING;
+            break;
+        default:
+            return false;
+        }
+        if (file > 7 || rank < 0) {
+            return false;
+        }
+
+        // Upper case is white in FEN
+        const uint8_t colour = (*p >= 'A' && *p <= 'Z') ? CH_WHITE : CH_BLACK;
+        const uint8_t sq = CH_SQ(file, rank);
+        pos->board[sq] = type | colour;
+        if (type == CH_KING) {
+            pos->king_sq[CH_CIDX(colour)] = sq;
+        }
+        ++file;
+    }
+    if (rank != 0 || file != 8) {
+        return false;
+    }
+
+    while (*p == ' ') {
+        ++p;
+    }
+    if (*p == 'w') {
+        pos->side = CH_WHITE;
+    } else if (*p == 'b') {
+        pos->side = CH_BLACK;
+    } else {
+        return false;
+    }
+    ++p;
+
+    while (*p == ' ') {
+        ++p;
+    }
+    if (*p == '-') {
+        ++p;
+    } else {
+        for (; *p && *p != ' '; ++p) {
+            switch (*p) {
+            case 'K':
+                pos->castle |= CH_CASTLE_WK;
+                break;
+            case 'Q':
+                pos->castle |= CH_CASTLE_WQ;
+                break;
+            case 'k':
+                pos->castle |= CH_CASTLE_BK;
+                break;
+            case 'q':
+                pos->castle |= CH_CASTLE_BQ;
+                break;
+            default:
+                return false;
+            }
+        }
+    }
+
+    while (*p == ' ') {
+        ++p;
+    }
+    if (*p == '-') {
+        ++p;
+    } else if (p[0] >= 'a' && p[0] <= 'h' && p[1] >= '1' && p[1] <= '8') {
+        pos->ep = (int8_t)CH_SQ(p[0] - 'a', p[1] - '1');
+        p += 2;
+    } else if (*p) {
+        return false;
+    }
+
+    // Halfmove and fullmove counters are optional in the perft suites
+    pos->halfmove = 0;
+    pos->fullmove = 1;
+    while (*p == ' ') {
+        ++p;
+    }
+    if (*p >= '0' && *p <= '9') {
+        unsigned v = 0;
+        for (; *p >= '0' && *p <= '9'; ++p) {
+            v = v * 10 + (unsigned)(*p - '0');
+        }
+        pos->halfmove = (uint16_t)v;
+        while (*p == ' ') {
+            ++p;
+        }
+        if (*p >= '0' && *p <= '9') {
+            v = 0;
+            for (; *p >= '0' && *p <= '9'; ++p) {
+                v = v * 10 + (unsigned)(*p - '0');
+            }
+            pos->fullmove = (uint16_t)v;
+        }
+    }
+
+    return true;
+}
+
+bool ch_attacked(const ch_pos_t* pos, uint8_t sq, uint8_t by)
+{
+    // Pawns. A white pawn on sq-17/sq-15 attacks sq; a black pawn on
+    // sq+17/sq+15 attacks sq.
+    const int pawn_from[2] = { (by == CH_WHITE) ? -17 : 17, (by == CH_WHITE) ? -15 : 15 };
+    for (int i = 0; i < 2; ++i) {
+        const int from = (int)sq + pawn_from[i];
+        if (CH_ONBOARD(from) && pos->board[from] == (CH_PAWN | by)) {
+            return true;
+        }
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        const int from = (int)sq + knight_off[i];
+        if (CH_ONBOARD(from) && pos->board[from] == (CH_KNIGHT | by)) {
+            return true;
+        }
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        const int from = (int)sq + king_off[i];
+        if (CH_ONBOARD(from) && pos->board[from] == (CH_KING | by)) {
+            return true;
+        }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        for (int from = (int)sq + bishop_off[i]; CH_ONBOARD(from); from += bishop_off[i]) {
+            const uint8_t pc = pos->board[from];
+            if (pc != CH_EMPTY) {
+                if (CH_COLOUR(pc) == by && (CH_TYPE(pc) == CH_BISHOP || CH_TYPE(pc) == CH_QUEEN)) {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        for (int from = (int)sq + rook_off[i]; CH_ONBOARD(from); from += rook_off[i]) {
+            const uint8_t pc = pos->board[from];
+            if (pc != CH_EMPTY) {
+                if (CH_COLOUR(pc) == by && (CH_TYPE(pc) == CH_ROOK || CH_TYPE(pc) == CH_QUEEN)) {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool ch_in_check(const ch_pos_t* pos, uint8_t side)
+{
+    return ch_attacked(pos, pos->king_sq[CH_CIDX(side)], CH_OPP(side));
+}
+
+static void add_move(ch_move_t* out, int* n, uint8_t from, uint8_t to, uint8_t promo, uint8_t flags)
+{
+    out[*n].from = from;
+    out[*n].to = to;
+    out[*n].promo = promo;
+    out[*n].flags = flags;
+    ++*n;
+}
+
+// Emit a pawn move, expanding to four moves when it lands on the back rank.
+static void add_pawn_move(ch_move_t* out, int* n, uint8_t from, uint8_t to, uint8_t flags, uint8_t colour)
+{
+    const int last_rank = (colour == CH_WHITE) ? 7 : 0;
+    if (CH_RANK(to) == last_rank) {
+        add_move(out, n, from, to, CH_QUEEN, flags | CH_MF_PROMO);
+        add_move(out, n, from, to, CH_ROOK, flags | CH_MF_PROMO);
+        add_move(out, n, from, to, CH_BISHOP, flags | CH_MF_PROMO);
+        add_move(out, n, from, to, CH_KNIGHT, flags | CH_MF_PROMO);
+    } else {
+        add_move(out, n, from, to, 0, flags);
+    }
+}
+
+static int gen_pseudo(const ch_pos_t* pos, ch_move_t* out)
+{
+    const uint8_t us = pos->side;
+    const uint8_t them = CH_OPP(us);
+    int n = 0;
+
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) {
+            continue;
+        }
+        const uint8_t pc = pos->board[sq];
+        if (pc == CH_EMPTY || CH_COLOUR(pc) != us) {
+            continue;
+        }
+        const uint8_t type = CH_TYPE(pc);
+
+        if (type == CH_PAWN) {
+            const int fwd = (us == CH_WHITE) ? 16 : -16;
+            const int start_rank = (us == CH_WHITE) ? 1 : 6;
+
+            const int one = sq + fwd;
+            if (CH_ONBOARD(one) && pos->board[one] == CH_EMPTY) {
+                add_pawn_move(out, &n, (uint8_t)sq, (uint8_t)one, 0, us);
+
+                const int two = sq + 2 * fwd;
+                if (CH_RANK(sq) == start_rank && CH_ONBOARD(two) && pos->board[two] == CH_EMPTY) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)two, 0, CH_MF_DOUBLE);
+                }
+            }
+
+            const int cap[2] = { sq + fwd - 1, sq + fwd + 1 };
+            for (int i = 0; i < 2; ++i) {
+                if (!CH_ONBOARD(cap[i])) {
+                    continue;
+                }
+                const uint8_t target = pos->board[cap[i]];
+                if (target != CH_EMPTY && CH_COLOUR(target) == them) {
+                    add_pawn_move(out, &n, (uint8_t)sq, (uint8_t)cap[i], CH_MF_CAPTURE, us);
+                } else if (pos->ep != CH_NO_EP && cap[i] == pos->ep) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)cap[i], 0, CH_MF_CAPTURE | CH_MF_EP);
+                }
+            }
+            continue;
+        }
+
+        if (type == CH_KNIGHT || type == CH_KING) {
+            const int* offs = (type == CH_KNIGHT) ? knight_off : king_off;
+            for (int i = 0; i < 8; ++i) {
+                const int to = sq + offs[i];
+                if (!CH_ONBOARD(to)) {
+                    continue;
+                }
+                const uint8_t target = pos->board[to];
+                if (target == CH_EMPTY) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)to, 0, 0);
+                } else if (CH_COLOUR(target) == them) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)to, 0, CH_MF_CAPTURE);
+                }
+            }
+            continue;
+        }
+
+        // Sliders
+        const int* offs;
+        int noffs;
+        if (type == CH_BISHOP) {
+            offs = bishop_off;
+            noffs = 4;
+        } else if (type == CH_ROOK) {
+            offs = rook_off;
+            noffs = 4;
+        } else {
+            offs = king_off; // queen: all eight directions
+            noffs = 8;
+        }
+        for (int i = 0; i < noffs; ++i) {
+            for (int to = sq + offs[i]; CH_ONBOARD(to); to += offs[i]) {
+                const uint8_t target = pos->board[to];
+                if (target == CH_EMPTY) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)to, 0, 0);
+                    continue;
+                }
+                if (CH_COLOUR(target) == them) {
+                    add_move(out, &n, (uint8_t)sq, (uint8_t)to, 0, CH_MF_CAPTURE);
+                }
+                break;
+            }
+        }
+    }
+
+    // Castling. The king must not start in check, pass through an attacked
+    // square, or land on one; the squares between must be empty. The final
+    // "lands on" test is left to the legality filter in ch_gen_legal().
+    const int home = (us == CH_WHITE) ? 0 : 7;
+    const uint8_t k_bit = (us == CH_WHITE) ? CH_CASTLE_WK : CH_CASTLE_BK;
+    const uint8_t q_bit = (us == CH_WHITE) ? CH_CASTLE_WQ : CH_CASTLE_BQ;
+    const uint8_t e = CH_SQ(4, home);
+
+    if ((pos->castle & k_bit) && pos->board[CH_SQ(5, home)] == CH_EMPTY && pos->board[CH_SQ(6, home)] == CH_EMPTY
+        && !ch_attacked(pos, e, them) && !ch_attacked(pos, CH_SQ(5, home), them)) {
+        add_move(out, &n, e, CH_SQ(6, home), 0, CH_MF_CASTLE);
+    }
+    if ((pos->castle & q_bit) && pos->board[CH_SQ(3, home)] == CH_EMPTY && pos->board[CH_SQ(2, home)] == CH_EMPTY
+        && pos->board[CH_SQ(1, home)] == CH_EMPTY && !ch_attacked(pos, e, them)
+        && !ch_attacked(pos, CH_SQ(3, home), them)) {
+        add_move(out, &n, e, CH_SQ(2, home), 0, CH_MF_CASTLE);
+    }
+
+    return n;
+}
+
+void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
+{
+    undo->move = *move;
+    undo->castle = pos->castle;
+    undo->ep = pos->ep;
+    undo->halfmove = pos->halfmove;
+    undo->fullmove = pos->fullmove;
+
+    const uint8_t from = move->from;
+    const uint8_t to = move->to;
+    const uint8_t pc = pos->board[from];
+    const uint8_t us = CH_COLOUR(pc);
+    const uint8_t type = CH_TYPE(pc);
+
+    if (move->flags & CH_MF_EP) {
+        // The captured pawn sits beside `from`, not on `to`
+        const uint8_t victim = (uint8_t)(CH_SQ(CH_FILE(to), CH_RANK(from)));
+        undo->captured = pos->board[victim];
+        pos->board[victim] = CH_EMPTY;
+    } else {
+        undo->captured = pos->board[to];
+    }
+
+    pos->board[to] = (move->flags & CH_MF_PROMO) ? (uint8_t)(move->promo | us) : pc;
+    pos->board[from] = CH_EMPTY;
+
+    if (type == CH_KING) {
+        pos->king_sq[CH_CIDX(us)] = to;
+    }
+
+    if (move->flags & CH_MF_CASTLE) {
+        // Shift the rook; the king has already moved above
+        const int home = CH_RANK(from);
+        if (CH_FILE(to) == 6) {
+            pos->board[CH_SQ(5, home)] = pos->board[CH_SQ(7, home)];
+            pos->board[CH_SQ(7, home)] = CH_EMPTY;
+        } else {
+            pos->board[CH_SQ(3, home)] = pos->board[CH_SQ(0, home)];
+            pos->board[CH_SQ(0, home)] = CH_EMPTY;
+        }
+    }
+
+    pos->castle &= (uint8_t)~(castle_mask[from] | castle_mask[to]);
+    pos->ep = (move->flags & CH_MF_DOUBLE) ? (int8_t)((from + to) / 2) : CH_NO_EP;
+
+    if (type == CH_PAWN || (move->flags & CH_MF_CAPTURE)) {
+        pos->halfmove = 0;
+    } else {
+        ++pos->halfmove;
+    }
+    if (us == CH_BLACK) {
+        ++pos->fullmove;
+    }
+    pos->side = CH_OPP(us);
+}
+
+void ch_unmake(ch_pos_t* pos, const ch_undo_t* undo)
+{
+    const ch_move_t* move = &undo->move;
+    const uint8_t from = move->from;
+    const uint8_t to = move->to;
+
+    pos->side = CH_COLOUR(pos->board[to]);
+    const uint8_t us = pos->side;
+
+    pos->board[from] = (move->flags & CH_MF_PROMO) ? (uint8_t)(CH_PAWN | us) : pos->board[to];
+    pos->board[to] = CH_EMPTY;
+
+    if (move->flags & CH_MF_EP) {
+        pos->board[CH_SQ(CH_FILE(to), CH_RANK(from))] = undo->captured;
+    } else {
+        pos->board[to] = undo->captured;
+    }
+
+    if (CH_TYPE(pos->board[from]) == CH_KING) {
+        pos->king_sq[CH_CIDX(us)] = from;
+    }
+
+    if (move->flags & CH_MF_CASTLE) {
+        const int home = CH_RANK(from);
+        if (CH_FILE(to) == 6) {
+            pos->board[CH_SQ(7, home)] = pos->board[CH_SQ(5, home)];
+            pos->board[CH_SQ(5, home)] = CH_EMPTY;
+        } else {
+            pos->board[CH_SQ(0, home)] = pos->board[CH_SQ(3, home)];
+            pos->board[CH_SQ(3, home)] = CH_EMPTY;
+        }
+    }
+
+    pos->castle = undo->castle;
+    pos->ep = undo->ep;
+    pos->halfmove = undo->halfmove;
+    pos->fullmove = undo->fullmove;
+}
+
+int ch_gen_legal(const ch_pos_t* pos, ch_move_t* out)
+{
+    ch_move_t pseudo[CH_MAX_MOVES];
+    const int npseudo = gen_pseudo(pos, pseudo);
+    const uint8_t us = pos->side;
+
+    ch_pos_t work = *pos;
+    int n = 0;
+    for (int i = 0; i < npseudo; ++i) {
+        ch_undo_t undo;
+        ch_make(&work, &pseudo[i], &undo);
+        if (!ch_attacked(&work, work.king_sq[CH_CIDX(us)], CH_OPP(us))) {
+            out[n++] = pseudo[i];
+        }
+        ch_unmake(&work, &undo);
+    }
+    return n;
+}
+
+uint64_t ch_perft(ch_pos_t* pos, int depth)
+{
+    if (depth == 0) {
+        return 1;
+    }
+
+    ch_move_t moves[CH_MAX_MOVES];
+    const int n = ch_gen_legal(pos, moves);
+    if (depth == 1) {
+        return (uint64_t)n;
+    }
+
+    uint64_t nodes = 0;
+    for (int i = 0; i < n; ++i) {
+        ch_undo_t undo;
+        ch_make(pos, &moves[i], &undo);
+        nodes += ch_perft(pos, depth - 1);
+        ch_unmake(pos, &undo);
+    }
+    return nodes;
+}
+
+// True when neither side has mating material (K vs K, K+minor vs K).
+static bool insufficient_material(const ch_pos_t* pos)
+{
+    int minors = 0;
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) {
+            continue;
+        }
+        switch (CH_TYPE(pos->board[sq])) {
+        case CH_EMPTY:
+        case CH_KING:
+            break;
+        case CH_KNIGHT:
+        case CH_BISHOP:
+            if (++minors > 1) {
+                return false;
+            }
+            break;
+        default:
+            return false; // pawn, rook or queen can mate
+        }
+    }
+    return true;
+}
+
+ch_result_t ch_result(const ch_pos_t* pos)
+{
+    ch_move_t moves[CH_MAX_MOVES];
+    if (ch_gen_legal(pos, moves) == 0) {
+        return ch_in_check(pos, pos->side) ? CH_CHECKMATE : CH_STALEMATE;
+    }
+    if (pos->halfmove >= 100) {
+        return CH_DRAW_FIFTY;
+    }
+    if (insufficient_material(pos)) {
+        return CH_DRAW_MATERIAL;
+    }
+    return CH_ONGOING;
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+#define CH_INF 30000
+#define CH_MATE 29000
+
+static const int piece_value[7] = { 0, 100, 320, 330, 500, 900, 0 };
+
+// Piece-square tables, from white's point of view, indexed by rank*8+file with
+// rank 0 = white's back rank. Black reads them mirrored.
+// clang-format off
+static const int8_t pst_pawn[64] = {
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5,  5, 10, 25, 25, 10,  5,  5,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    50, 50, 50, 50, 50, 50, 50, 50,
+     0,  0,  0,  0,  0,  0,  0,  0,
+};
+static const int8_t pst_knight[64] = {
+   -50,-40,-30,-30,-30,-30,-40,-50,
+   -40,-20,  0,  5,  5,  0,-20,-40,
+   -30,  5, 10, 15, 15, 10,  5,-30,
+   -30,  0, 15, 20, 20, 15,  0,-30,
+   -30,  5, 15, 20, 20, 15,  5,-30,
+   -30,  0, 10, 15, 15, 10,  0,-30,
+   -40,-20,  0,  0,  0,  0,-20,-40,
+   -50,-40,-30,-30,-30,-30,-40,-50,
+};
+static const int8_t pst_bishop[64] = {
+   -20,-10,-10,-10,-10,-10,-10,-20,
+   -10,  5,  0,  0,  0,  0,  5,-10,
+   -10, 10, 10, 10, 10, 10, 10,-10,
+   -10,  0, 10, 10, 10, 10,  0,-10,
+   -10,  5,  5, 10, 10,  5,  5,-10,
+   -10,  0,  5, 10, 10,  5,  0,-10,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -20,-10,-10,-10,-10,-10,-10,-20,
+};
+static const int8_t pst_rook[64] = {
+     0,  0,  0,  5,  5,  0,  0,  0,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     5, 10, 10, 10, 10, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+};
+static const int8_t pst_queen[64] = {
+   -20,-10,-10, -5, -5,-10,-10,-20,
+   -10,  0,  5,  0,  0,  0,  0,-10,
+   -10,  5,  5,  5,  5,  5,  0,-10,
+     0,  0,  5,  5,  5,  5,  0, -5,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+   -10,  0,  5,  5,  5,  5,  0,-10,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -20,-10,-10, -5, -5,-10,-10,-20,
+};
+static const int8_t pst_king[64] = {
+    20, 30, 10,  0,  0, 10, 30, 20,
+    20, 20,  0,  0,  0,  0, 20, 20,
+   -10,-20,-20,-20,-20,-20,-20,-10,
+   -20,-30,-30,-40,-40,-30,-30,-20,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+};
+// clang-format on
+
+static const int8_t* pst_for(uint8_t type)
+{
+    switch (type) {
+    case CH_PAWN:
+        return pst_pawn;
+    case CH_KNIGHT:
+        return pst_knight;
+    case CH_BISHOP:
+        return pst_bishop;
+    case CH_ROOK:
+        return pst_rook;
+    case CH_QUEEN:
+        return pst_queen;
+    default:
+        return pst_king;
+    }
+}
+
+// Score from the point of view of the side to move.
+static int evaluate(const ch_pos_t* pos)
+{
+    int score = 0;
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) {
+            continue;
+        }
+        const uint8_t pc = pos->board[sq];
+        if (pc == CH_EMPTY) {
+            continue;
+        }
+        const uint8_t type = CH_TYPE(pc);
+        const int file = CH_FILE(sq);
+        const int rank = CH_RANK(sq);
+        const bool white = CH_COLOUR(pc) == CH_WHITE;
+        // Black mirrors the table vertically
+        const int idx = white ? (rank * 8 + file) : ((7 - rank) * 8 + file);
+        const int v = piece_value[type] + pst_for(type)[idx];
+        score += white ? v : -v;
+    }
+    return (pos->side == CH_WHITE) ? score : -score;
+}
+
+// Order captures first, most-valuable-victim first. Cheap, and worth far more
+// than its cost in a plain alpha-beta.
+static void sort_moves(const ch_pos_t* pos, ch_move_t* moves, int n)
+{
+    int score[CH_MAX_MOVES];
+    for (int i = 0; i < n; ++i) {
+        if (moves[i].flags & CH_MF_CAPTURE) {
+            const uint8_t victim = CH_TYPE(pos->board[moves[i].to]);
+            const uint8_t attacker = CH_TYPE(pos->board[moves[i].from]);
+            score[i] = 1000 + piece_value[victim] - piece_value[attacker] / 10;
+        } else if (moves[i].flags & CH_MF_PROMO) {
+            score[i] = 900;
+        } else {
+            score[i] = 0;
+        }
+    }
+    // Insertion sort: n is small and this keeps the code obvious
+    for (int i = 1; i < n; ++i) {
+        const ch_move_t m = moves[i];
+        const int s = score[i];
+        int j = i - 1;
+        for (; j >= 0 && score[j] < s; --j) {
+            moves[j + 1] = moves[j];
+            score[j + 1] = score[j];
+        }
+        moves[j + 1] = m;
+        score[j + 1] = s;
+    }
+}
+
+// Search only captures until the position is quiet, so the engine does not
+// stop mid-exchange and misread a hanging piece as material won.
+static int quiesce(ch_pos_t* pos, int alpha, int beta)
+{
+    const int stand_pat = evaluate(pos);
+    if (stand_pat >= beta) {
+        return beta;
+    }
+    if (stand_pat > alpha) {
+        alpha = stand_pat;
+    }
+
+    ch_move_t moves[CH_MAX_MOVES];
+    const int n = ch_gen_legal(pos, moves);
+    sort_moves(pos, moves, n);
+
+    for (int i = 0; i < n; ++i) {
+        if (!(moves[i].flags & (CH_MF_CAPTURE | CH_MF_PROMO))) {
+            continue;
+        }
+        ch_undo_t undo;
+        ch_make(pos, &moves[i], &undo);
+        const int score = -quiesce(pos, -beta, -alpha);
+        ch_unmake(pos, &undo);
+
+        if (score >= beta) {
+            return beta;
+        }
+        if (score > alpha) {
+            alpha = score;
+        }
+    }
+    return alpha;
+}
+
+static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
+{
+    if (depth <= 0) {
+        return quiesce(pos, alpha, beta);
+    }
+
+    ch_move_t moves[CH_MAX_MOVES];
+    const int n = ch_gen_legal(pos, moves);
+    if (n == 0) {
+        // Mate scores are graded by distance so the engine prefers a mate now
+        // over a mate later, and resists the reverse.
+        return ch_in_check(pos, pos->side) ? -CH_MATE + ply : 0;
+    }
+    if (pos->halfmove >= 100) {
+        return 0;
+    }
+    sort_moves(pos, moves, n);
+
+    for (int i = 0; i < n; ++i) {
+        ch_undo_t undo;
+        ch_make(pos, &moves[i], &undo);
+        const int score = -negamax(pos, depth - 1, -beta, -alpha, ply + 1);
+        ch_unmake(pos, &undo);
+
+        if (score >= beta) {
+            return beta;
+        }
+        if (score > alpha) {
+            alpha = score;
+        }
+    }
+    return alpha;
+}
+
+bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best)
+{
+    ch_move_t moves[CH_MAX_MOVES];
+    const int n = ch_gen_legal(pos, moves);
+    if (n == 0) {
+        return false;
+    }
+    sort_moves(pos, moves, n);
+
+    int best_score = -CH_INF;
+    *best = moves[0];
+    for (int i = 0; i < n; ++i) {
+        ch_undo_t undo;
+        ch_make(pos, &moves[i], &undo);
+        const int score = -negamax(pos, depth - 1, -CH_INF, -best_score, 1);
+        ch_unmake(pos, &undo);
+
+        if (score > best_score) {
+            best_score = score;
+            *best = moves[i];
+        }
+    }
+    return true;
+}
