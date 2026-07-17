@@ -2,6 +2,7 @@
 #define CHESS_ENGINE_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Chess engine using 0x88 board representation.
@@ -137,5 +138,31 @@ bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
 // Compute the Zobrist key from scratch. Normally you use pos->hash, which is
 // kept up to date; this exists for initialisation and for tests.
 uint64_t ch_zobrist(const ch_pos_t* pos);
+
+#define CH_TT_NONE 0
+#define CH_TT_EXACT 1
+#define CH_TT_LOWER 2
+#define CH_TT_UPPER 3
+
+typedef struct {
+    uint64_t key;
+    ch_move_t move;
+    int16_t score;
+    uint8_t depth;
+    uint8_t flag; // CH_TT_*
+} ch_tt_entry_t;
+
+typedef struct {
+    ch_tt_entry_t* entries;
+    size_t count;
+} ch_tt_t;
+
+// The engine never allocates; the caller provides a buffer of at least
+// ch_tt_sizeof(count) bytes (PSRAM on device). ch_tt_init clears it.
+size_t ch_tt_sizeof(size_t count);
+void ch_tt_init(ch_tt_t* tt, void* buffer, size_t count);
+void ch_tt_clear(ch_tt_t* tt);
+bool ch_tt_probe(const ch_tt_t* tt, uint64_t key, ch_tt_entry_t* out);
+void ch_tt_store(ch_tt_t* tt, uint64_t key, int depth, int score, uint8_t flag, ch_move_t move);
 
 #endif /* CHESS_ENGINE_H_ */

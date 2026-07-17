@@ -82,11 +82,35 @@ static void test_hash_consistency_over_move_tree(void) {
     }
 }
 
+static void test_tt_store_probe(void) {
+    const size_t N = 1024;
+    void* buf = malloc(ch_tt_sizeof(N));
+    ch_tt_t tt; ch_tt_init(&tt, buf, N);
+
+    ch_tt_entry_t out;
+    check(!ch_tt_probe(&tt, 0x1234, &out), "probe of empty table misses");
+
+    ch_move_t mv = { .from = 12, .to = 28, .promo = 0, .flags = 0 };
+    ch_tt_store(&tt, 0x1234, 5, 42, CH_TT_EXACT, mv);
+    check(ch_tt_probe(&tt, 0x1234, &out), "probe finds the stored key");
+    check(out.score == 42 && out.depth == 5 && out.flag == CH_TT_EXACT, "stored fields round-trip");
+    check(out.move.from == 12 && out.move.to == 28, "stored move round-trips");
+    check(!ch_tt_probe(&tt, 0x9999, &out), "probe of a different key misses");
+
+    ch_tt_clear(&tt);
+    check(!ch_tt_probe(&tt, 0x1234, &out), "clear empties the table");
+    free(buf);
+}
+
 int main(void) {
     printf("\nzobrist\n");
     test_hash_matches_recompute_after_moves();
     test_transposition_equal();
     test_hash_consistency_over_move_tree();
+
+    printf("\ntt\n");
+    test_tt_store_probe();
+
     if (failures) { printf("\n%d test(s) FAILED\n", failures); return 1; }
     printf("\nall engine_tt tests passed\n");
     return 0;

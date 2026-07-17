@@ -881,4 +881,36 @@ bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best)
     return true;
 }
 
+// Transposition table implementation
+size_t ch_tt_sizeof(size_t count) { return count * sizeof(ch_tt_entry_t); }
+
+void ch_tt_init(ch_tt_t* tt, void* buffer, size_t count) {
+    tt->entries = (ch_tt_entry_t*)buffer;
+    tt->count = count;
+    ch_tt_clear(tt);
+}
+
+void ch_tt_clear(ch_tt_t* tt) {
+    memset(tt->entries, 0, tt->count * sizeof(ch_tt_entry_t));
+    // flag CH_TT_NONE == 0, so a zeroed table reads as empty
+}
+
+bool ch_tt_probe(const ch_tt_t* tt, uint64_t key, ch_tt_entry_t* out) {
+    const ch_tt_entry_t* e = &tt->entries[key % tt->count];
+    if (e->flag == CH_TT_NONE || e->key != key) return false;
+    *out = *e;
+    return true;
+}
+
+void ch_tt_store(ch_tt_t* tt, uint64_t key, int depth, int score, uint8_t flag, ch_move_t move) {
+    ch_tt_entry_t* e = &tt->entries[key % tt->count];
+    // Depth-preferred replacement: keep a deeper existing entry for the same key.
+    if (e->flag != CH_TT_NONE && e->key == key && e->depth > depth) return;
+    e->key = key;
+    e->move = move;
+    e->score = (int16_t)score;
+    e->depth = (uint8_t)depth;
+    e->flag = flag;
+}
+
 #endif // AMALGAMATED_BUILD
