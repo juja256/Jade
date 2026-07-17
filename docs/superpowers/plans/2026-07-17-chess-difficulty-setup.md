@@ -312,10 +312,29 @@ Expected: PASS — `all engine_tt tests passed`.
 Run: `cc -O2 -o /tmp/perft main/chess/test/perft_test.c main/chess/engine.c -Imain/chess && /tmp/perft`
 Expected: `all 26 perft cases passed`. This is the load-bearing check that the hash-in-state change did not break make/unmake.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Wire engine_tt_test into the runner**
+
+In `main/chess/test/run_tests.sh`, add `engine_tt_test` to the test loop so it runs as part of the suite. Change the line:
 
 ```bash
-git add main/chess/engine.h main/chess/engine.c main/chess/test/engine_tt_test.c
+for t in perft_test search_test render_test game_test; do
+```
+
+to:
+
+```bash
+for t in perft_test search_test render_test game_test engine_tt_test; do
+```
+
+(The loop compiles each test with `$SRCS` = `chess_game.c chess_board.c engine.c`; the extra objects are harmless because `engine_tt_test.c` has its own `main` and only references engine symbols.)
+
+Run: `./main/chess/test/run_tests.sh`
+Expected: all suites pass, including `engine_tt_test`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add main/chess/engine.h main/chess/engine.c main/chess/test/engine_tt_test.c main/chess/test/run_tests.sh
 git commit -m "chess: carry a Zobrist hash in the position (engine, foundation for TT)"
 ```
 
