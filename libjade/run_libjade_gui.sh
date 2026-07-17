@@ -3,11 +3,12 @@
 set -e
 
 usage() {
-    echo "Usage: $0 [--inprocess | --daemon] [--nvs-file PATH] [--log-level none|error|warn|info|debug|verbose] [Debug|Release|RelWithDebInfo|MinSizeRel|Sanitize]"
+    echo "Usage: $0 [--inprocess | --daemon] [--nvs-file PATH] [--log-level none|error|warn|info|debug|verbose] [--chess] [Debug|Release|RelWithDebInfo|MinSizeRel|Sanitize]"
     echo "  --inprocess  Load libjade.so directly in the GUI process (default)"
     echo "  --daemon     Run libjade as a separate daemon process"
     echo "  --nvs-file   NVS flash storage file (default: nvs_flash.bin)"
     echo "  --log-level  Set log verbosity (default: info)"
+    echo "  --chess      Build with the chess app enabled"
     exit 1
 }
 
@@ -16,6 +17,7 @@ BUILD_TYPE="Debug"
 NVS_FILE="nvs_flash.bin"
 LOG_LEVEL="info"
 CBOR_SOCKET="/tmp/jade_cbor.sock"
+CHESS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
                 *) echo "Invalid log level: $1"; usage ;;
             esac
             shift ;;
+        --chess) CHESS="--chess"; shift ;;
         Debug|Release|RelWithDebInfo|MinSizeRel|Sanitize) BUILD_TYPE="$1"; shift ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
@@ -48,7 +51,7 @@ fi
 echo "--------------------------------"
 echo "Building libjade ($MODE mode, $BUILD_TYPE)..."
 echo "--------------------------------"
-$JADE_PATH/libjade/make_libjade.sh $BUILD_TYPE --log --camera --no-ci
+$JADE_PATH/libjade/make_libjade.sh $BUILD_TYPE --log --camera --no-ci $CHESS
 
 if [ "$BUILD_TYPE" == "Sanitize" ]; then
     export ASAN_OPTIONS=symbolize=1:detect_leaks=0

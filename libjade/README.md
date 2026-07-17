@@ -20,6 +20,16 @@ libjade is built using cmake. You must have `IDF_PATH` set in your environment
 in the same way as when doing normal jade development. Note that the idf
 tooling is not used, but the idf-provided mbed-tls library is built natively.
 
+**NOTE**: run `tools/switch_to.sh` at least once before building libjade, e.g:
+
+```
+./tools/switch_to.sh jade --dev --noradio
+```
+
+libjade's cmake globs `managed_components/`, which is populated by the idf
+component manager during `idf.py reconfigure` (which `switch_to.sh` runs).
+Without it the build fails with `No SOURCES given to target: cbor_target`.
+
 To build, run:
 
 ```
@@ -64,10 +74,15 @@ python console that allows the jade to be programmatically manipulated.
 To build and run the example, use:
 
 ```
-./libjade/run_libjade_gui.sh [--daemon] [Debug|Release|RelWithDebInfo|MinSizeRel|Sanitize]
+./libjade/run_libjade_gui.sh [--daemon] [--chess] [Debug|Release|RelWithDebInfo|MinSizeRel|Sanitize]
 ```
 
 Use `--help` to print other command line options.
+
+Pass `--chess` to build with this fork's optional chess app enabled (see the
+[Chess app](../README.md#chess-app) section). Note that libjade's display is
+320x200, whereas Jade Plus is 320x170 -- so libjade is a poor place to judge
+screen layout.
 
 ## Status
 

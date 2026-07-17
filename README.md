@@ -1,5 +1,12 @@
 # Jade Firmware Development
 
+**This is an unofficial fork of [Blockstream/Jade](https://github.com/Blockstream/Jade),
+not affiliated with or endorsed by Blockstream.** It adds an optional
+[chess app](#chess-app) that is off by default. With the app disabled -- which is
+the default -- builds follow upstream; every change is gated behind
+`CONFIG_CHESS_APP`. For anything other than playing with the chess app, use
+upstream.
+
 * DO NOT ATTEMPT TO BUILD/FLASH WITH OFFICIAL BLOCKSTREAM JADE HARDWARE UNITS
 
 The below instructions are for developers with access to Jade development
@@ -155,7 +162,8 @@ You can then build and flash as detailed below.
 First, you'll need the Jade source code including its sub-modules checked out:
 
 ```
-git clone --recursive https://github.com/Blockstream/Jade.git $HOME/jade
+# TODO: replace with this fork's URL before publishing
+git clone --recursive https://github.com/YOUR-USER/YOUR-FORK.git $HOME/jade
 cd $HOME/jade
 git submodule update --init --recursive
 ```
@@ -291,9 +299,110 @@ Pass the device string `"tcp:localhost:30121"` when connecting, e.g.:
 python -c "from jadepy.jade import JadeAPI; jade = JadeAPI.create_serial(device='tcp:localhost:30121'); jade.connect(); print(jade.get_version_info()); jade.disconnect()"
 ```
 
+# Chess app
+
+This fork adds an optional chess app, playable on the device against an
+on-board engine. It is **off by default** and is not part of upstream Jade.
+
+> **This is a toy, and it is the only reason this fork exists.**
+> It links a chess engine into hardware wallet firmware: new attack surface,
+> no security benefit, and it perturbs reproducible builds. Do not enable it on
+> a device that holds funds, and do not use this fork as a wallet. It is
+> intended for development devices and DIY boards.
+
+The design and its rationale are written up in
+[docs/superpowers/specs/2026-07-16-chess-app-design.md](./docs/superpowers/specs/2026-07-16-chess-app-design.md).
+
+## Playing
+
+The board is a fixed 160x160 (eight 20px squares), so the app requires a
+display of at least **240x160**. Jade Plus (320x170) qualifies; the original
+Jade and Jade 1.1 (240x135) do not, and neither does the default qemu board.
+Enabling it on too small a display is a compile-time error, not a clipped
+board.
+
+Jade Plus has three inputs -- two navigation buttons and a front select button
+(both navigation buttons pressed together also selects). Rather than walk a
+cursor over 64 squares, the app cycles through **legal moves only**: select a
+piece that can move, then cycle its legal destinations. Illegal moves cannot be
+expressed, and most moves take two or three clicks. `< Back`, `Resign` and
+`Exit` are entries in that same cycle, as the firmware provides no cancel
+gesture.
+
+The app appears in the `Options` menu. It needs no wallet, and is available
+whether or not the device is initialised or unlocked.
+
+## Building it
+
+Pass `--chess` to `switch_to.sh`, e.g. for a Jade Plus development build:
+
+```
+$ ./tools/switch_to.sh jade_v2 --dev --log --chess
+$ idf.py all
+$ idf.py -p $JADESERIALPORT flash monitor
+```
+
+Or enable `CONFIG_CHESS_APP` under `Blockstream Jade` in `idf.py menuconfig`.
+
+## Under qemu
+
+**NOTE**: `--webdisplay-larger` is required, not `--webdisplay`. The default
+qemu board is 240x135, which is too small for the board; `--webdisplay-larger`
+is 320x170, matching Jade Plus exactly.
+
+```
+$ docker build -t jade-chess -f Dockerfile.qemu . \
+    --build-arg QEMU_CONFIG_ARGS="--dev --psram --webdisplay-larger --chess"
+$ docker run --rm -p 30121:30121 -p 30122:30122 -it jade-chess
+```
+
+Then point a browser at http://localhost:30122.
+
+## Under libjade
+
+libjade runs the firmware natively, and is the fastest way to work on the app.
+See [libjade](./libjade/README.md).
+
+```
+$ ./tools/switch_to.sh jade --dev --noradio   # NOTE: required first, see libjade/README.md
+$ ./libjade/make_libjade.sh Debug --chess --no-ci
+$ ./libjade/run_libjade_gui.sh --chess
+```
+
+Use `--no-ci` for interactive play, or the firmware auto-clicks its own buttons.
+libjade's display is 320x200 rather than Jade Plus's 320x170, so it is the wrong
+place to judge layout -- use qemu `--webdisplay-larger` for that.
+
+libjade can also be driven programmatically via its `send_input` and
+`get_display_bytes` RPCs, which is how the app was developed and tested without
+hardware:
+
+```python
+jade._jadeRpc('libjade_request', {'request': 'send_input', 'event': 'right'})
+frame = jade._jadeRpc('libjade_request', {'request': 'get_display_bytes'})
+```
+
+## Tests
+
+The engine, board rendering and move-cycling state machine depend on nothing
+outside libc and are tested on the host -- no device, no esp-idf, no docker:
+
+```
+$ ./main/chess/test/run_tests.sh [--asan]
+```
+
+This runs perft (the standard move-generation correctness test, against
+published node counts), search and terminal-state tests, rendering and SAN
+tests, and full games driven through the state machine's public API. It also
+compiles every chess source with esp-idf's own warning flags, since the firmware
+builds `-Werror=all`.
+
 # Reproducible Build
 
 See [REPRODUCIBLE.md](./REPRODUCIBLE.md) for instructions on locally reproducing the official Blockstream Jade firmware images (minus the Blockstream signature block).
+
+**NOTE**: enabling the chess app changes the firmware binary, so a build with
+`--chess` will not reproduce the official images.
 
 # DIY
 
