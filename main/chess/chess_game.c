@@ -353,6 +353,10 @@ chg_action_t chg_engine_played(chg_game_t* game, const ch_move_t* move)
     return enter_turn(game);
 }
 
+// NOTE: the side panel is CONFIG_DISPLAY_WIDTH - CHB_BOARD_PX = 160px, which
+// fits about 13 characters in the default font. Longer strings are silently
+// truncated by the text node -- "Checkmate - you lose" rendered as
+// "Checkmate - yo". Keep every string below short enough to fit.
 const char* chg_status(const chg_game_t* game)
 {
     if (game->state == CHG_GAME_OVER) {
@@ -362,13 +366,13 @@ const char* chg_status(const chg_game_t* game)
         switch (game->result) {
         case CH_CHECKMATE:
             // The side to move is the one mated
-            return (game->view.pos.side == game->human) ? "Checkmate - you lose" : "Checkmate - you win";
+            return (game->view.pos.side == game->human) ? "You lose!" : "You win!";
         case CH_STALEMATE:
             return "Stalemate";
         case CH_DRAW_FIFTY:
-            return "Draw: fifty moves";
+            return "Draw: 50-move";
         case CH_DRAW_MATERIAL:
-            return "Draw: material";
+            return "Draw: pieces";
         default:
             return "Game over";
         }

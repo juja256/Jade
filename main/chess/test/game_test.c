@@ -226,7 +226,7 @@ static void test_knight_underpromotion_draws(void)
     check(act == CHG_ACT_NONE, "K+N vs K: no engine turn, the game is over");
     check(g.state == CHG_GAME_OVER, "K+N vs K ends the game");
     check(g.result == CH_DRAW_MATERIAL, "classified as insufficient material");
-    check(!strcmp(chg_status(&g), "Draw: material"), "status reports a material draw");
+    check(!strcmp(chg_status(&g), "Draw: pieces"), "status reports a material draw");
 }
 
 static void test_promotion_defaults_to_queen(void)
@@ -316,6 +316,52 @@ static void test_status_strings(void)
     check(!strcmp(chg_status(&b), "Thinking..."), "status: Thinking...");
 }
 
+// The side panel is 160px, which fits ~13 characters in the default font, and
+// the text node truncates silently: "Checkmate - you lose" once rendered on
+// device as "Checkmate - yo". Pin every reachable status string's length.
+#define CHG_STATUS_MAX_CHARS 13
+static void test_status_strings_fit_panel(void)
+{
+    // Drive each terminal state and check what chg_status() would show.
+    struct {
+        const char* fen;
+        bool resign;
+        const char* what;
+    } cases[] = {
+        { "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", true, "resigned" },
+        { "R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1", false, "checkmate (human mated)" },
+        { "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", false, "stalemate" },
+        { "8/8/4k3/8/8/4KB2/8/8 w - - 0 1", false, "insufficient material" },
+        { "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false, "your move" },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        ch_pos_t pos;
+        if (!ch_from_fen(&pos, cases[i].fen)) {
+            check(false, cases[i].what);
+            continue;
+        }
+        chg_game_t g;
+        chg_set_position(&g, &pos, CH_WHITE);
+        if (cases[i].resign) {
+            cycle_to(&g, "Resign");
+            chg_select(&g);
+        }
+        const char* s = chg_status(&g);
+        char what[96];
+        snprintf(what, sizeof(what), "status fits panel: \"%s\" (%zu chars)", s, strlen(s));
+        check(strlen(s) <= CHG_STATUS_MAX_CHARS, what);
+    }
+
+    // The in-play strings too
+    static const char* const inplay[] = { "Your move", "Move to...", "Promote to...", "Thinking...", "Check!" };
+    for (size_t i = 0; i < sizeof(inplay) / sizeof(inplay[0]); ++i) {
+        char what[96];
+        snprintf(what, sizeof(what), "status fits panel: \"%s\" (%zu chars)", inplay[i], strlen(inplay[i]));
+        check(strlen(inplay[i]) <= CHG_STATUS_MAX_CHARS, what);
+    }
+}
+
 static void test_ring_never_overflows(void)
 {
     // A queen on an open board has 27 moves; the destination ring must hold
@@ -363,6 +409,7 @@ int main(void)
 
     printf("\nbounds\n");
     test_ring_never_overflows();
+    test_status_strings_fit_panel();
 
     printf("\nfull game\n");
     test_full_game_via_api();

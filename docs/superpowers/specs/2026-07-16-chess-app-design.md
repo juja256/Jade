@@ -383,9 +383,47 @@ device.
 | Search, terminal states | **Tested** — mate-in-1, stalemate, draws, 120-ply self-play |
 | Rendering, SAN | **Tested** — images inspected; SAN incl. both disambiguation forms |
 | State machine | **Tested** — full 224-move game via public API |
-| `chess_ui.c` | **Not run** — syntax/type-checked against stub headers only |
-| Firmware build, flash, device | **Not done** — no ESP-IDF or docker available |
+| `chess_ui.c` | **Run** — plays real games under libjade, driven via `send_input` / `get_display_bytes` |
+| Firmware build | **Builds** — libjade with `--chess`; the qemu/esp32 build previously reached 1377/1383 |
+| Physical device | **Not done** — never flashed |
 | `format.sh` | **Not run** — clang-format-19 absent; CI may reformat |
+
+### What running it actually caught
+
+Three bugs that no amount of host testing would have found, because the host
+suites never compile `chess_ui.c` at all:
+
+1. **`-Wformat-truncation`** on the ring counter. ESP-IDF builds `-Werror=all`;
+   the compiler cannot see `CHG_RING_MAX` through the struct and assumes the
+   full `int` range. Killed the firmware build at 1377/1383.
+2. **Smeared panel text.** `gui_update_text()` clears the old string by
+   repainting the node's *parent*, so a text node needs a `FILL` parent to paint
+   over. Parented straight to a split, nothing was ever erased and each value
+   drew on top of the last. Looks fine until the text changes.
+3. **Truncated status strings.** The 160px panel fits ~13 characters and the
+   text node truncates silently -- "Checkmate - you lose" rendered as
+   "Checkmate - yo". Now pinned by `test_status_strings_fit_panel()`.
+
+Note the ownership asymmetry behind (2): `gui_update_picture()` **aliases** the
+pointer it is given, while `gui_update_text()` **mallocs and copies**. Same
+shaped API, opposite ownership, and only one of them needs a background to
+repaint correctly.
+
+### Driving libjade
+
+libjade exposes `send_input` (`left`/`right`/`click`, straight into
+`gui_prev()`/`gui_next()`/`gui_front_click()`) and `get_display_bytes`, so the
+whole app can be driven and screenshotted with no hardware:
+
+```python
+jade._jadeRpc('libjade_request', {'request': 'send_input', 'event': 'right'})
+jade._jadeRpc('libjade_request', {'request': 'get_display_bytes'})
+```
+
+Build it with `./libjade/make_libjade.sh Debug --chess --no-ci`, but run
+`./tools/switch_to.sh jade --dev --noradio` first: libjade's CMake globs
+`managed_components/`, which only exists after `idf.py reconfigure` has fetched
+it. `--no-ci` matters too, or the firmware auto-clicks its own buttons.
 
 ## Open questions
 
