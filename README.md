@@ -162,8 +162,7 @@ You can then build and flash as detailed below.
 First, you'll need the Jade source code including its sub-modules checked out:
 
 ```
-# TODO: replace with this fork's URL before publishing
-git clone --recursive https://github.com/YOUR-USER/YOUR-FORK.git $HOME/jade
+git clone --recursive https://github.com/juja256/Jade.git $HOME/jade
 cd $HOME/jade
 git submodule update --init --recursive
 ```
