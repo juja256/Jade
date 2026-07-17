@@ -822,8 +822,22 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
     return alpha;
 }
 
-static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
+static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt_t* tt)
 {
+    const int alpha_orig = alpha;
+
+    ch_tt_entry_t hit;
+    ch_move_t tt_move = { 0, 0, 0, 0 };
+    if (tt && ch_tt_probe(tt, pos->hash, &hit)) {
+        tt_move = hit.move;
+        if (hit.depth >= depth) {
+            if (hit.flag == CH_TT_EXACT) return hit.score;
+            if (hit.flag == CH_TT_LOWER && hit.score > alpha) alpha = hit.score;
+            else if (hit.flag == CH_TT_UPPER && hit.score < beta) beta = hit.score;
+            if (alpha >= beta) return hit.score;
+        }
+    }
+
     if (depth <= 0) {
         return quiesce(pos, alpha, beta, CH_QUIESCE_MAX);
     }
@@ -831,8 +845,6 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
     ch_move_t moves[CH_MAX_MOVES];
     const int n = ch_gen_legal(pos, moves);
     if (n == 0) {
-        // Mate scores are graded by distance so the engine prefers a mate now
-        // over a mate later, and resists the reverse.
         return ch_in_check(pos, pos->side) ? -CH_MATE + ply : 0;
     }
     if (pos->halfmove >= 100) {
@@ -840,45 +852,102 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
     }
     sort_moves(pos, moves, n);
 
+    // If the TT suggested a move, search it first.
+    if (tt_move.from != tt_move.to) {
+        for (int i = 1; i < n; ++i) {
+            if (moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promo == tt_move.promo) {
+                const ch_move_t tmp = moves[0]; moves[0] = moves[i]; moves[i] = tmp;
+                break;
+            }
+        }
+    }
+
+    int best = -CH_INF;
+    ch_move_t best_move = moves[0];
     for (int i = 0; i < n; ++i) {
         ch_undo_t undo;
         ch_make(pos, &moves[i], &undo);
-        const int score = -negamax(pos, depth - 1, -beta, -alpha, ply + 1);
+        const int score = -negamax(pos, depth - 1, -beta, -alpha, ply + 1, tt);
         ch_unmake(pos, &undo);
-
-        if (score >= beta) {
-            return beta;
-        }
-        if (score > alpha) {
-            alpha = score;
-        }
+        if (score > best) { best = score; best_move = moves[i]; }
+        if (score > alpha) alpha = score;
+        if (alpha >= beta) break;
     }
-    return alpha;
+
+    if (tt) {
+        const uint8_t flag = (best <= alpha_orig) ? CH_TT_UPPER : (best >= beta) ? CH_TT_LOWER : CH_TT_EXACT;
+        ch_tt_store(tt, pos->hash, depth, best, flag, best_move);
+    }
+    return best;
 }
 
-bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best)
-{
-    ch_move_t moves[CH_MAX_MOVES];
+static uint32_t xrng(uint32_t* s) {
+    uint32_t x = *s ? *s : 0x1234567u;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+// Root search to `depth` via iterative deepening, writing per-move scores into
+// `scores` (parallel to `moves`) and returning the best score. `moves`/`scores`
+// must hold CH_MAX_MOVES.
+//
+// The root uses a FULL window (-CH_INF, CH_INF) for every move, so scores[i] is
+// each move's exact value -- the randomness pool in ch_search_ex depends on
+// that. Alpha-beta pruning still happens in the deeper negamax calls, and the
+// TT (seeded across ID iterations) supplies move ordering there. The root move
+// list is not reordered, so moves[i] and scores[i] stay parallel for the caller.
+static int search_root(ch_pos_t* pos, int depth, ch_tt_t* tt, ch_move_t* moves, int* scores, int* count) {
     const int n = ch_gen_legal(pos, moves);
-    if (n == 0) {
-        return false;
-    }
+    *count = n;
+    if (n == 0) return 0;
     sort_moves(pos, moves, n);
 
-    int best_score = -CH_INF;
-    *best = moves[0];
-    for (int i = 0; i < n; ++i) {
-        ch_undo_t undo;
-        ch_make(pos, &moves[i], &undo);
-        const int score = -negamax(pos, depth - 1, -CH_INF, -best_score, 1);
-        ch_unmake(pos, &undo);
-
-        if (score > best_score) {
-            best_score = score;
-            *best = moves[i];
+    int best = -CH_INF;
+    for (int d = 1; d <= depth; ++d) {
+        best = -CH_INF;
+        for (int i = 0; i < n; ++i) {
+            ch_undo_t undo;
+            ch_make(pos, &moves[i], &undo);
+            scores[i] = -negamax(pos, d - 1, -CH_INF, CH_INF, 1, tt);
+            ch_unmake(pos, &undo);
+            if (scores[i] > best) best = scores[i];
         }
     }
+    return best;
+}
+
+int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt) {
+    ch_move_t moves[CH_MAX_MOVES];
+    int scores[CH_MAX_MOVES];
+    int n = 0;
+    return search_root(pos, depth, tt, moves, scores, &n);
+}
+
+bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_tt_t* tt, ch_move_t* best) {
+    ch_move_t moves[CH_MAX_MOVES];
+    int scores[CH_MAX_MOVES];
+    int n = 0;
+    const int best_score = search_root(pos, depth, tt, moves, scores, &n);
+    if (n == 0) return false;
+
+    if (margin > 0 && rng_state) {
+        // Collect moves within `margin` of the best, pick one at random.
+        int pool[CH_MAX_MOVES]; int m = 0;
+        for (int i = 0; i < n; ++i) if (scores[i] >= best_score - margin) pool[m++] = i;
+        *best = moves[pool[xrng(rng_state) % (uint32_t)m]];
+        return true;
+    }
+
+    // Strict best move.
+    int bi = 0;
+    for (int i = 1; i < n; ++i) if (scores[i] > scores[bi]) bi = i;
+    *best = moves[bi];
     return true;
+}
+
+bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best) {
+    return ch_search_ex(pos, depth, 0, NULL, NULL, best);
 }
 
 // Transposition table implementation

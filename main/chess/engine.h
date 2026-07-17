@@ -131,10 +131,6 @@ uint64_t ch_perft(ch_pos_t* pos, int depth);
 // Game state for the side to move.
 ch_result_t ch_result(const ch_pos_t* pos);
 
-// Search for the best move for the side to move. Returns false when no legal
-// move exists (checkmate or stalemate), leaving *best untouched.
-bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
-
 // Compute the Zobrist key from scratch. Normally you use pos->hash, which is
 // kept up to date; this exists for initialisation and for tests.
 uint64_t ch_zobrist(const ch_pos_t* pos);
@@ -164,5 +160,17 @@ void ch_tt_init(ch_tt_t* tt, void* buffer, size_t count);
 void ch_tt_clear(ch_tt_t* tt);
 bool ch_tt_probe(const ch_tt_t* tt, uint64_t key, ch_tt_entry_t* out);
 void ch_tt_store(ch_tt_t* tt, uint64_t key, int depth, int score, uint8_t flag, ch_move_t move);
+
+// Best root score at the given depth (iterative deepening). Deterministic.
+int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt);
+
+// Search for a move. Among root moves scoring within `margin` centipawns of the
+// best, picks one at random via `rng_state` (xorshift32 state, may be NULL);
+// margin 0 or rng NULL gives the strict best move. `tt` may be NULL.
+// Returns false when there is no legal move.
+bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_tt_t* tt, ch_move_t* best);
+
+// Strict best-move search (margin 0, no randomness, no table).
+bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
 
 #endif /* CHESS_ENGINE_H_ */

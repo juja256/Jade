@@ -102,6 +102,55 @@ static void test_tt_store_probe(void) {
     free(buf);
 }
 
+static uint32_t rng = 0xC0FFEEu;
+
+static void test_tt_invariance(void) {
+    const char* fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+    };
+    void* buf = malloc(ch_tt_sizeof(1 << 15));
+    ch_tt_t tt; ch_tt_init(&tt, buf, 1 << 15);
+    for (size_t i = 0; i < sizeof(fens)/sizeof(fens[0]); ++i) {
+        for (int d = 1; d <= 4; ++d) {
+            ch_pos_t a; ch_from_fen(&a, fens[i]);
+            ch_pos_t b; ch_from_fen(&b, fens[i]);
+            ch_tt_clear(&tt);
+            const int with = ch_search_bestscore(&a, d, &tt);
+            const int without = ch_search_bestscore(&b, d, NULL);
+            char what[80]; snprintf(what, sizeof(what), "TT-invariant: fen %zu depth %d (%d==%d)", i, d, with, without);
+            check(with == without, what);
+        }
+    }
+    free(buf);
+}
+
+static void test_margin_stays_within_bound(void) {
+    ch_pos_t pos; ch_init(&pos);
+    const int depth = 4, margin = 40;
+    const int best = ch_search_bestscore(&pos, depth, NULL);
+
+    // With a margin, the chosen move must score within `margin` of best.
+    for (int t = 0; t < 20; ++t) {
+        ch_move_t mv;
+        if (!ch_search_ex(&pos, depth, margin, &rng, NULL, &mv)) { check(false, "search returns a move"); return; }
+        ch_undo_t u; ch_make(&pos, &mv, &u);
+        const int chosen = -ch_search_bestscore(&pos, depth - 1, NULL); // value of the chosen move
+        ch_unmake(&pos, &u);
+        if (chosen < best - margin) { check(false, "chosen move within margin of best"); return; }
+    }
+    check(true, "chosen move within margin of best (20 draws)");
+}
+
+static void test_margin_zero_is_deterministic(void) {
+    ch_pos_t pos; ch_init(&pos);
+    ch_move_t a, b;
+    ch_search_ex(&pos, 4, 0, &rng, NULL, &a);
+    ch_search_ex(&pos, 4, 0, &rng, NULL, &b);
+    check(a.from == b.from && a.to == b.to, "margin 0 is deterministic");
+}
+
 int main(void) {
     printf("\nzobrist\n");
     test_hash_matches_recompute_after_moves();
@@ -110,6 +159,11 @@ int main(void) {
 
     printf("\ntt\n");
     test_tt_store_probe();
+
+    printf("\nsearch\n");
+    test_tt_invariance();
+    test_margin_stays_within_bound();
+    test_margin_zero_is_deterministic();
 
     if (failures) { printf("\n%d test(s) FAILED\n", failures); return 1; }
     printf("\nall engine_tt tests passed\n");
