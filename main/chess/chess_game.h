@@ -28,6 +28,9 @@
 // Label long enough for "Knight" and for any SAN string.
 #define CHG_LABEL_LEN 12
 
+// Number of difficulty levels (1..5)
+#define CHG_NUM_LEVELS 5
+
 typedef enum {
     CHG_PIECE_SELECT = 0, // choosing which piece to move
     CHG_DEST_SELECT, // choosing where it goes
@@ -65,6 +68,7 @@ typedef struct {
     chb_view_t view; // position + highlights, ready to render
     chg_state_t state;
     uint8_t human; // CH_WHITE or CH_BLACK
+    uint8_t level; // difficulty level (1..5)
     ch_result_t result; // valid once state == CHG_GAME_OVER
     bool resigned;
 
@@ -84,6 +88,18 @@ typedef struct {
 // Start a new game. Returns CHG_ACT_ENGINE when the engine moves first (that
 // is, when the human is black).
 chg_action_t chg_init(chg_game_t* game, uint8_t human_colour);
+
+// Start a new game at the given difficulty level. Level out of 1..5 clamps to 2.
+chg_action_t chg_init_ex(chg_game_t* game, uint8_t human_colour, uint8_t level);
+
+// Get depth and margin parameters for a difficulty level.
+void chg_level_params(uint8_t level, int* depth, int* margin);
+
+// Get the label for a difficulty level (e.g., "Lv3 ~1650").
+const char* chg_level_label(uint8_t level);
+
+// Get the short label for a difficulty level (e.g., "Lv3").
+const char* chg_level_short(uint8_t level);
 
 // Start from an arbitrary position rather than the opening. Same contract as
 // chg_init(). Used by the tests, and the hook any future save/resume would

@@ -382,6 +382,36 @@ static void test_ring_never_overflows(void)
     check(queen_moves + 1 <= CHG_RING_MAX, what);
 }
 
+static void test_level_params(void) {
+    struct { uint8_t lv; int depth; int margin; } cases[] = {
+        {1,3,40},{2,4,0},{3,5,0},{4,6,0},{5,7,0}
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
+        int d = -1, m = -1;
+        chg_level_params(cases[i].lv, &d, &m);
+        char what[64]; snprintf(what, sizeof(what), "Lv%u -> depth %d margin %d", cases[i].lv, cases[i].depth, cases[i].margin);
+        check(d == cases[i].depth && m == cases[i].margin, what);
+    }
+    int d = 0, m = 0;
+    chg_level_params(0, &d, &m);   check(d == 4 && m == 0, "level 0 clamps to Lv2");
+    chg_level_params(99, &d, &m);  check(d == 4 && m == 0, "level 99 clamps to Lv2");
+}
+
+static void test_level_labels_fit_panel(void) {
+    for (uint8_t lv = 1; lv <= CHG_NUM_LEVELS; ++lv) {
+        check(strlen(chg_level_label(lv)) <= 13, "level label fits panel");
+        check(strlen(chg_level_short(lv)) <= 13, "short level label fits panel");
+    }
+}
+
+static void test_init_ex_records_level(void) {
+    chg_game_t g;
+    chg_init_ex(&g, CH_WHITE, 4);
+    check(g.level == 4, "chg_init_ex records the level");
+    chg_init(&g, CH_WHITE);
+    check(g.level == 2, "chg_init defaults to Lv2");
+}
+
 int main(void)
 {
     printf("\ninitial state\n");
@@ -410,6 +440,11 @@ int main(void)
     printf("\nbounds\n");
     test_ring_never_overflows();
     test_status_strings_fit_panel();
+
+    printf("\nlevels\n");
+    test_level_params();
+    test_level_labels_fit_panel();
+    test_init_ex_records_level();
 
     printf("\nfull game\n");
     test_full_game_via_api();
