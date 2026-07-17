@@ -15,6 +15,7 @@ UNAMALGAMATED=""
 WEBDISPLAY=""
 WEBDISPLAY_LARGER=""
 SKIP_RECONFIGURE=""
+CHESS=""
 
 function usage {
     if [ -n "$1" ]; then
@@ -37,6 +38,7 @@ function usage {
     echo "    --dev        Development (non-production) device (mandatory for qemu)"
     echo "    --ci         Automatically execute the default UX action for CI testing"
     echo "    --debug      Enable debug message handlers for testing"
+    echo "    --chess      Enable the chess app (personal/DIY builds only)"
     echo "    --unamalgamated    Disable amalgamation of source files when building"
     echo "    --skip-reconfigure Make config changes but do not reconfigure the build"
     if [ -n "$1" ]; then
@@ -83,6 +85,7 @@ while true; do
         --log-cbor) LOG=cbor; shift ;;
         --log-wifi) LOG=wifi; shift ;;
         --debug)    DEBUG=1; shift ;;
+        --chess)    CHESS=1; shift ;;
         --jtag)     JTAG=1; shift ;;
         --psram)    PSRAM=1; shift ;;
         --unamalgamated) UNAMALGAMATED=1; shift ;;
@@ -282,6 +285,10 @@ if [ -n "$PSRAM" ]; then
         # remove settings
         remove_config CONFIG_BOARD_TYPE_QEMU
     fi
+fi
+if [ -n "$CHESS" ]; then
+    echo "updating config file for chess app ..."
+    set_config CONFIG_CHESS_APP y
 fi
 if [ -n "$UNAMALGAMATED" ]; then
     echo "updating config file for unamalgamated build ..."

@@ -16,6 +16,22 @@
 #include <stdio.h>
 #include <string.h>
 
+// The board is a fixed CHB_BOARD_PX square (see the design doc: scaling it
+// would mean piece art at several sizes for no real gain), so the display must
+// be able to hold it plus a usable panel. Jade Plus and qemu --webdisplay-larger
+// are 320x170 and libjade is 320x200; plain qemu and Jade v1.x are 240x135 and
+// cannot fit it. Fail loudly here rather than silently render a clipped board.
+//
+// CHESS_APP has no BOARD_TYPE dependency on purpose (libjade defines no
+// BOARD_TYPE_* and qemu is BOARD_TYPE_QEMU_LARGER), so this is the check.
+#define CHESS_MIN_PANEL_PX 80
+#if CONFIG_DISPLAY_HEIGHT < CHB_BOARD_PX
+#error "CONFIG_CHESS_APP requires a display at least 160px tall. For qemu use --webdisplay-larger (320x170)."
+#endif
+#if CONFIG_DISPLAY_WIDTH < (CHB_BOARD_PX + CHESS_MIN_PANEL_PX)
+#error "CONFIG_CHESS_APP requires a display at least 240px wide. For qemu use --webdisplay-larger (320x170)."
+#endif
+
 // Nominal search depth. Deeper plays better but thinks longer. There is no
 // task watchdog on jade_v2 (CONFIG_ESP_TASK_WDT_EN=n), so an over-long search
 // is a UX problem rather than a crash -- tune this on device.
@@ -152,7 +168,12 @@ static void repaint(const chg_game_t* game, const chess_nodes_t* nodes, uint16_t
     const chg_entry_t* const cur = chg_current(game);
     gui_update_text(nodes->entry, cur ? cur->label : "");
 
-    char counter[16] = "";
+    // Both values are bounded by CHG_RING_MAX, but the compiler cannot see
+    // that through the struct and assumes the full int range, so size for the
+    // worst case two ints can print ("-2147483648/-2147483648" plus a
+    // terminator). Anything smaller trips -Wformat-truncation, which the IDF
+    // build treats as an error.
+    char counter[24] = "";
     if (game->ring_len > 0) {
         snprintf(counter, sizeof(counter), "%d/%d", game->ring_pos + 1, game->ring_len);
     }
