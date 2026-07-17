@@ -642,6 +642,12 @@ ch_result_t ch_result(const ch_pos_t* pos)
 #define CH_INF 30000
 #define CH_MATE 29000
 
+// Mate scores (|score| within this of CH_MATE) are stored NODE-relative in the
+// TT and converted back to ROOT-relative on probe, so a mate value reached via
+// a transposition at a different ply is not misreported. Bound is well above
+// any reachable ply (search depth + quiescence).
+#define CH_MATE_THRESH (CH_MATE - 256)
+
 static const int piece_value[7] = { 0, 100, 320, 330, 500, 900, 0 };
 
 // Piece-square tables, from white's point of view, indexed by rank*8+file with
@@ -830,11 +836,14 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt
     ch_move_t tt_move = { 0, 0, 0, 0 };
     if (tt && ch_tt_probe(tt, pos->hash, &hit)) {
         tt_move = hit.move;
+        int tt_score = hit.score;
+        if (tt_score > CH_MATE_THRESH) tt_score -= ply;
+        else if (tt_score < -CH_MATE_THRESH) tt_score += ply;
         if (hit.depth >= depth) {
-            if (hit.flag == CH_TT_EXACT) return hit.score;
-            if (hit.flag == CH_TT_LOWER && hit.score > alpha) alpha = hit.score;
-            else if (hit.flag == CH_TT_UPPER && hit.score < beta) beta = hit.score;
-            if (alpha >= beta) return hit.score;
+            if (hit.flag == CH_TT_EXACT) return tt_score;
+            if (hit.flag == CH_TT_LOWER && tt_score > alpha) alpha = tt_score;
+            else if (hit.flag == CH_TT_UPPER && tt_score < beta) beta = tt_score;
+            if (alpha >= beta) return tt_score;
         }
     }
 
@@ -876,7 +885,10 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt
 
     if (tt) {
         const uint8_t flag = (best <= alpha_orig) ? CH_TT_UPPER : (best >= beta) ? CH_TT_LOWER : CH_TT_EXACT;
-        ch_tt_store(tt, pos->hash, depth, best, flag, best_move);
+        int store_score = best;
+        if (store_score > CH_MATE_THRESH) store_score += ply;
+        else if (store_score < -CH_MATE_THRESH) store_score -= ply;
+        ch_tt_store(tt, pos->hash, depth, store_score, flag, best_move);
     }
     return best;
 }

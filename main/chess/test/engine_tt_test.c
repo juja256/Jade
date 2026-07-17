@@ -126,6 +126,27 @@ static void test_tt_invariance(void) {
     free(buf);
 }
 
+static void test_tt_mate_consistency(void) {
+    void* buf = malloc(ch_tt_sizeof(1 << 15));
+    ch_tt_t tt; ch_tt_init(&tt, buf, 1 << 15);
+    static const char* const fens[] = {
+        "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", // Ra8#: mate in 1
+        "6k1/6pp/8/8/8/8/5PPP/1R4K1 w - - 0 1", // Rb8#: mate in 1
+    };
+    for (size_t i = 0; i < sizeof(fens)/sizeof(fens[0]); ++i) {
+        for (int d = 2; d <= 5; ++d) {
+            ch_pos_t a; ch_from_fen(&a, fens[i]);
+            ch_pos_t b; ch_from_fen(&b, fens[i]);
+            ch_tt_clear(&tt);
+            const int with = ch_search_bestscore(&a, d, &tt);
+            const int without = ch_search_bestscore(&b, d, NULL);
+            char what[80]; snprintf(what, sizeof(what), "mate TT-consistent: fen %zu depth %d (%d==%d)", i, d, with, without);
+            check(with == without, what);
+        }
+    }
+    free(buf);
+}
+
 static void test_margin_stays_within_bound(void) {
     ch_pos_t pos; ch_init(&pos);
     const int depth = 4, margin = 40;
@@ -162,6 +183,7 @@ int main(void) {
 
     printf("\nsearch\n");
     test_tt_invariance();
+    test_tt_mate_consistency();
     test_margin_stays_within_bound();
     test_margin_zero_is_deterministic();
 
