@@ -48,10 +48,45 @@ static void test_transposition_equal(void) {
     check(a.hash != c.hash, "different ep target hashes differ");
 }
 
+// Walk the move tree to `depth`, asserting the incremental hash matches the
+// from-scratch recompute after every make and every unmake. Exercises captures,
+// en passant, castling and promotion, which the linear line above does not.
+static bool walk_hash_ok(ch_pos_t* pos, int depth) {
+    if (depth == 0) return true;
+    ch_move_t moves[CH_MAX_MOVES];
+    const int n = ch_gen_legal(pos, moves);
+    for (int i = 0; i < n; ++i) {
+        ch_undo_t u;
+        ch_make(pos, &moves[i], &u);
+        if (pos->hash != ch_zobrist(pos)) return false;
+        if (!walk_hash_ok(pos, depth - 1)) return false;
+        ch_unmake(pos, &u);
+        if (pos->hash != ch_zobrist(pos)) return false;
+    }
+    return true;
+}
+
+static void test_hash_consistency_over_move_tree(void) {
+    static const char* const fens[] = {
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", // kiwipete: captures, castling
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",                            // position3: en passant
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",     // position4: promotions
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",            // position5: castling rights, promo
+    };
+    for (size_t i = 0; i < sizeof(fens) / sizeof(fens[0]); ++i) {
+        ch_pos_t pos;
+        if (!ch_from_fen(&pos, fens[i])) { check(false, "walk FEN parses"); continue; }
+        char what[64];
+        snprintf(what, sizeof(what), "hash consistent over move tree (fen %zu, depth 3)", i);
+        check(walk_hash_ok(&pos, 3), what);
+    }
+}
+
 int main(void) {
     printf("\nzobrist\n");
     test_hash_matches_recompute_after_moves();
     test_transposition_equal();
+    test_hash_consistency_over_move_tree();
     if (failures) { printf("\n%d test(s) FAILED\n", failures); return 1; }
     printf("\nall engine_tt tests passed\n");
     return 0;
