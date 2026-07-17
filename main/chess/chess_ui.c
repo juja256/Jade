@@ -96,26 +96,37 @@ static gui_activity_t* make_chess_activity(chess_nodes_t* nodes)
     gui_make_vsplit(&vsplit, GUI_SPLIT_RELATIVE, 4, 22, 22, 16, 40);
     gui_set_parent(vsplit, hsplit);
 
+    // Every text node needs a FILL parent. gui_update_text() clears the old
+    // string by repainting the node's parent, so without a background to paint
+    // the previous text is never erased and successive values smear on top of
+    // each other. Parenting text straight to a split looks fine until the text
+    // changes. See the same pattern in ui/mnemonic.c.
+    gui_view_node_t* bg;
+
+    gui_make_fill(&bg, TFT_BLACK, FILL_PLAIN, vsplit);
     gui_make_text(&nodes->status, "", TFT_WHITE);
     gui_set_align(nodes->status, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
-    gui_set_parent(nodes->status, vsplit);
+    gui_set_parent(nodes->status, bg);
 
+    gui_make_fill(&bg, TFT_BLACK, FILL_PLAIN, vsplit);
     gui_make_text_font(&nodes->entry, "", TFT_WHITE, GUI_TITLE_FONT);
     gui_set_align(nodes->entry, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
-    gui_set_parent(nodes->entry, vsplit);
+    gui_set_parent(nodes->entry, bg);
 
+    gui_make_fill(&bg, TFT_BLACK, FILL_PLAIN, vsplit);
     gui_make_text(&nodes->counter, "", TFT_LIGHTGREY);
     gui_set_align(nodes->counter, GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
-    gui_set_parent(nodes->counter, vsplit);
+    gui_set_parent(nodes->counter, bg);
 
     // Text nodes are single-line, so several lines need several nodes.
     gui_view_node_t* histsplit;
     gui_make_vsplit(&histsplit, GUI_SPLIT_RELATIVE, CHESS_HIST_LINES, 33, 33, 34);
     gui_set_parent(histsplit, vsplit);
     for (int i = 0; i < CHESS_HIST_LINES; ++i) {
+        gui_make_fill(&bg, TFT_BLACK, FILL_PLAIN, histsplit);
         gui_make_text(&nodes->hist[i], "", TFT_LIGHTGREY);
         gui_set_align(nodes->hist[i], GUI_ALIGN_CENTER, GUI_ALIGN_MIDDLE);
-        gui_set_parent(nodes->hist[i], histsplit);
+        gui_set_parent(nodes->hist[i], bg);
     }
 
     return act;

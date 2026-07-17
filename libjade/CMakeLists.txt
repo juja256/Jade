@@ -71,6 +71,11 @@ if (CAMERA)
     add_compile_options(-DCONFIG_LIBJADE_CAMERA)
 endif()
 
+option(CHESS "Enable the libjade chess app" OFF)
+if (CHESS)
+    add_compile_options(-DCONFIG_LIBJADE_CHESS)
+endif()
+
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN YES)

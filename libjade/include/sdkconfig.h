@@ -30,6 +30,15 @@
 // libjade may have no camera, but supports the debug scan_qr message
 #define CONFIG_HAS_CAMERA 1
 
+// Chess app (personal/DIY builds only). This header is hand-maintained and
+// does not read the project sdkconfig, so the app has to be enabled here.
+// make_libjade.sh --chess defines CONFIG_LIBJADE_CHESS.
+// NOTE: the display above is 320x200, which satisfies the chess app's minimum
+// of 240x160 (see main/chess/chess_ui.c).
+#ifdef CONFIG_LIBJADE_CHESS
+#define CONFIG_CHESS_APP 1
+#endif
+
 #define CONFIG_IDF_FIRMWARE_CHIP_ID 0 // Needed to build
 
 #endif // _LIBJADE_SDKCONFIG_H_
