@@ -38,7 +38,7 @@ dependencies.
 Jade requires the esp-idf SDK. You can use our docker image to build or
 install the esp-idf toolchain locally using the commands below.
 
-See the [Espressif official guide](https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32/get-started/index.html)
+See the [Espressif official guide](https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32/get-started/index.html)
 for more information on the available tooling.
 
 # Device targets
@@ -96,28 +96,31 @@ NOTE: MacOS users should set up the environment locally as detailed below to
 avoid issues with device access. For more information see
 [this article](https://dev.to/rubberduck/using-usb-with-docker-for-mac-3fdd).
 
-Blockstream provides the `blockstream/jade_build` docker image which provides
-the idf tooling and other dependencies required to build. To run a shell inside
-the Jade development builder, use:
+Blockstream provides the `blockstream/jade_builder` docker image, which provides
+the idf tooling and other dependencies required to build.
+
+The simplest way to use it is the `docker-compose.yml` file in this repository,
+which mounts the current repository source code into the container and pins the
+image by digest:
 
 ```
-docker run -it blockstream/jade_build:latest bash
-```
-
-Run `get_idf` within this container to enable the idf tools.
-
-Alternately, the `docker-compose.yml` file in this repository can be used to
-work on the current respository source code from within the `jade_build`
-container.
-
-```
-$ # Build the image and run a shell inside it
+$ # Run a shell inside the builder, with this repository mounted
 $ docker compose run dev bash
-(docker)$ Set up idf environment
+(docker)$ # Set up idf environment
 (docker)$ get_idf
-(docker)# Make the serial device available to internal scripts, for example:
+(docker)$ # Make the serial device available to internal scripts, for example:
 (docker)$ export JADESERIALPORT=/dev/ttyACM0
 ```
+
+To run the image directly instead, use the same digest that `docker-compose.yml`
+pins. **NOTE**: there is no `latest` tag published for this image, so
+`blockstream/jade_builder:latest` will not resolve:
+
+```
+$ docker run -it $(grep -o 'blockstream/jade_builder@sha256:[0-9a-f]*' docker-compose.yml) bash
+```
+
+Run `get_idf` within the container to enable the idf tools.
 
 You can then build and flash as detailed below.
 
