@@ -77,6 +77,7 @@ typedef struct {
     uint16_t halfmove; // halfmove clock (fifty-move rule)
     uint16_t fullmove;
     uint8_t king_sq[2]; // indexed by CH_CIDX()
+    uint64_t hash; // Zobrist key; maintained by ch_make/ch_unmake
 } ch_pos_t;
 
 // Information required to undo a move
@@ -87,6 +88,7 @@ typedef struct {
     int8_t ep;
     uint16_t halfmove;
     uint16_t fullmove;
+    uint64_t hash; // position hash before the move
 } ch_undo_t;
 
 typedef enum {
@@ -131,5 +133,9 @@ ch_result_t ch_result(const ch_pos_t* pos);
 // Search for the best move for the side to move. Returns false when no legal
 // move exists (checkmate or stalemate), leaving *best untouched.
 bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
+
+// Compute the Zobrist key from scratch. Normally you use pos->hash, which is
+// kept up to date; this exists for initialisation and for tests.
+uint64_t ch_zobrist(const ch_pos_t* pos);
 
 #endif /* CHESS_ENGINE_H_ */

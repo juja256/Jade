@@ -52,7 +52,7 @@ echo "  chess_ui.c: SKIPPED (needs ESP-IDF headers; checked by the firmware buil
 echo
 echo "== test suites =="
 failed=0
-for t in perft_test search_test render_test game_test; do
+for t in perft_test search_test render_test game_test engine_tt_test; do
     # shellcheck disable=SC2086
     cc $SAN -Wall -Wextra -Werror -o "$OUT/$t" "$CHESS/test/$t.c" $SRCS -I"$CHESS"
     if (cd "$OUT" && "./$t" . >"$OUT/$t.log" 2>&1); then

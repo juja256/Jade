@@ -9,6 +9,54 @@
 
 #include <string.h>
 
+// Zobrist hashing. Keys are generated once from a fixed seed; they need only be
+// consistent within a single process, not across builds.
+static uint64_t zob_piece[12][64];
+static uint64_t zob_side;
+static uint64_t zob_castle[16];
+static uint64_t zob_ep[8];
+static bool zob_ready = false;
+
+static uint64_t zob_next(uint64_t* s) {
+    uint64_t x = *s;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    *s = x;
+    return x;
+}
+
+static void zob_ensure(void) {
+    if (zob_ready) return;
+    uint64_t s = 0x9E3779B97F4A7C15ULL;
+    for (int p = 0; p < 12; ++p)
+        for (int q = 0; q < 64; ++q) zob_piece[p][q] = zob_next(&s);
+    zob_side = zob_next(&s);
+    for (int i = 0; i < 16; ++i) zob_castle[i] = zob_next(&s);
+    for (int i = 0; i < 8; ++i) zob_ep[i] = zob_next(&s);
+    zob_ready = true;
+}
+
+// 0x88 square -> 0..63
+static inline int zob_sq(uint8_t sq) { return (CH_RANK(sq) << 3) | CH_FILE(sq); }
+// piece byte -> 0..11 (type 1..6, colour)
+static inline int zob_pidx(uint8_t pc) {
+    return (CH_TYPE(pc) - 1) + (CH_COLOUR(pc) == CH_BLACK ? 6 : 0);
+}
+static inline uint64_t zob_pc(uint8_t pc, uint8_t sq) { return zob_piece[zob_pidx(pc)][zob_sq(sq)]; }
+
+uint64_t ch_zobrist(const ch_pos_t* pos) {
+    zob_ensure();
+    uint64_t h = 0;
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) continue;
+        const uint8_t pc = pos->board[sq];
+        if (pc != CH_EMPTY) h ^= zob_pc(pc, (uint8_t)sq);
+    }
+    if (pos->side == CH_BLACK) h ^= zob_side;
+    h ^= zob_castle[pos->castle & 0x0F];
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+    return h;
+}
+
 // 0x88 move offsets. Square arithmetic is done in int to avoid uint8_t wrap;
 // CH_ONBOARD() then rejects anything that stepped off the board.
 static const int knight_off[8] = { -33, -31, -18, -14, 14, 18, 31, 33 };
@@ -46,6 +94,7 @@ void ch_init(ch_pos_t* pos)
     pos->fullmove = 1;
     pos->king_sq[CH_CIDX(CH_WHITE)] = CH_SQ(4, 0);
     pos->king_sq[CH_CIDX(CH_BLACK)] = CH_SQ(4, 7);
+    pos->hash = ch_zobrist(pos);
 }
 
 bool ch_from_fen(ch_pos_t* pos, const char* fen)
@@ -191,6 +240,7 @@ bool ch_from_fen(ch_pos_t* pos, const char* fen)
         }
     }
 
+    pos->hash = ch_zobrist(pos);
     return true;
 }
 
@@ -393,6 +443,7 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     undo->ep = pos->ep;
     undo->halfmove = pos->halfmove;
     undo->fullmove = pos->fullmove;
+    undo->hash = pos->hash;
 
     const uint8_t from = move->from;
     const uint8_t to = move->to;
@@ -400,16 +451,27 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     const uint8_t us = CH_COLOUR(pc);
     const uint8_t type = CH_TYPE(pc);
 
+    uint64_t h = pos->hash;
+    // Retire the old castling-rights and en-passant contributions; the new ones
+    // are XORed back in once they are known, below.
+    h ^= zob_castle[pos->castle & 0x0F];
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+
+    h ^= zob_pc(pc, from); // piece leaves `from`
+
     if (move->flags & CH_MF_EP) {
-        // The captured pawn sits beside `from`, not on `to`
         const uint8_t victim = (uint8_t)(CH_SQ(CH_FILE(to), CH_RANK(from)));
         undo->captured = pos->board[victim];
+        h ^= zob_pc(undo->captured, victim);
         pos->board[victim] = CH_EMPTY;
     } else {
         undo->captured = pos->board[to];
+        if (undo->captured != CH_EMPTY) h ^= zob_pc(undo->captured, to);
     }
 
-    pos->board[to] = (move->flags & CH_MF_PROMO) ? (uint8_t)(move->promo | us) : pc;
+    const uint8_t placed = (move->flags & CH_MF_PROMO) ? (uint8_t)(move->promo | us) : pc;
+    h ^= zob_pc(placed, to); // piece arrives at `to`
+    pos->board[to] = placed;
     pos->board[from] = CH_EMPTY;
 
     if (type == CH_KING) {
@@ -417,19 +479,29 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     }
 
     if (move->flags & CH_MF_CASTLE) {
-        // Shift the rook; the king has already moved above
         const int home = CH_RANK(from);
         if (CH_FILE(to) == 6) {
-            pos->board[CH_SQ(5, home)] = pos->board[CH_SQ(7, home)];
+            const uint8_t rook = pos->board[CH_SQ(7, home)];
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(7, home));
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(5, home));
+            pos->board[CH_SQ(5, home)] = rook;
             pos->board[CH_SQ(7, home)] = CH_EMPTY;
         } else {
-            pos->board[CH_SQ(3, home)] = pos->board[CH_SQ(0, home)];
+            const uint8_t rook = pos->board[CH_SQ(0, home)];
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(0, home));
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(3, home));
+            pos->board[CH_SQ(3, home)] = rook;
             pos->board[CH_SQ(0, home)] = CH_EMPTY;
         }
     }
 
     pos->castle &= (uint8_t)~(castle_mask[from] | castle_mask[to]);
     pos->ep = (move->flags & CH_MF_DOUBLE) ? (int8_t)((from + to) / 2) : CH_NO_EP;
+
+    h ^= zob_castle[pos->castle & 0x0F]; // new castling rights
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+    h ^= zob_side; // side to move always flips
+    pos->hash = h;
 
     if (type == CH_PAWN || (move->flags & CH_MF_CAPTURE)) {
         pos->halfmove = 0;
@@ -444,6 +516,7 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
 
 void ch_unmake(ch_pos_t* pos, const ch_undo_t* undo)
 {
+    pos->hash = undo->hash;
     const ch_move_t* move = &undo->move;
     const uint8_t from = move->from;
     const uint8_t to = move->to;
