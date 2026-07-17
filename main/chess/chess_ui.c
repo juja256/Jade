@@ -8,6 +8,7 @@
 #include "../idletimer.h"
 #include "../jade_assert.h"
 #include "../jade_log.h"
+#include "../random.h"
 #include "../utils/malloc_ext.h"
 #include "../utils/temporary_stack.h"
 
@@ -32,16 +33,18 @@
 #error "CONFIG_CHESS_APP requires a display at least 240px wide. For qemu use --webdisplay-larger (320x170)."
 #endif
 
-// Nominal search depth. Deeper plays better but thinks longer. There is no
-// task watchdog on jade_v2 (CONFIG_ESP_TASK_WDT_EN=n), so an over-long search
-// is a UX problem rather than a crash -- tune this on device.
-#define CHESS_SEARCH_DEPTH 3
-
 // Every negamax/quiesce frame holds a CH_MAX_MOVES array (1KB) plus locals,
 // and ch_gen_legal() stacks another such array transiently on the deepest
 // frame. Size from the longest possible chain rather than guessing; the search
-// depth bound is why CH_QUIESCE_MAX exists.
-#define CHESS_SEARCH_STACK ((CHESS_SEARCH_DEPTH + CH_QUIESCE_MAX) * 1536 + 8192)
+// depth bound is why CH_QUIESCE_MAX exists. There is no task watchdog on
+// jade_v2 (CONFIG_ESP_TASK_WDT_EN=n), so an over-long search is a UX problem
+// rather than a crash -- tune this on device.
+//
+// Deepest selectable level (Lv5). The search stack must cover it.
+#define CHESS_MAX_DEPTH 7
+#define CHESS_SEARCH_STACK ((CHESS_MAX_DEPTH + CH_QUIESCE_MAX) * 1536 + 8192)
+// ~1 MB transposition table (PSRAM). 2^16 entries * sizeof(ch_tt_entry_t).
+#define CHESS_TT_ENTRIES (1u << 16)
 
 // A player may stare at the board for minutes without pressing anything.
 // Without this the device blanks mid-game.
@@ -54,6 +57,10 @@ typedef struct {
     ch_pos_t pos;
     ch_move_t best;
     bool found;
+    int depth;
+    int margin;
+    uint32_t* rng;
+    ch_tt_t* tt;
 } search_args_t;
 
 // Runs on the temporary task. Must not touch the GUI: it is a different task
@@ -62,7 +69,7 @@ static bool search_impl(void* ctx)
 {
     search_args_t* args = ctx;
     JADE_ASSERT(args);
-    args->found = ch_search(&args->pos, CHESS_SEARCH_DEPTH, &args->best);
+    args->found = ch_search_ex(&args->pos, args->depth, args->margin, args->rng, args->tt, &args->best);
     return true;
 }
 
@@ -196,11 +203,14 @@ static void repaint(const chg_game_t* game, const chess_nodes_t* nodes, uint16_t
 // Search on its own task so it gets a stack sized for the recursion without
 // permanently inflating the caller's, and so the GUI task keeps painting the
 // "Thinking..." indicator while it runs.
-static chg_action_t engine_turn(chg_game_t* game)
+static chg_action_t engine_turn(chg_game_t* game, ch_tt_t* tt, uint32_t* rng)
 {
-    search_args_t args = {};
+    search_args_t args = {0};
     args.pos = game->view.pos;
     args.found = false;
+    args.rng = rng;
+    args.tt = tt;
+    chg_level_params(game->level, &args.depth, &args.margin);
 
     if (!run_in_temporary_task(CHESS_SEARCH_STACK, search_impl, &args)) {
         JADE_LOGE("chess: failed to run search task");
@@ -234,11 +244,22 @@ void chess_ui_run(void)
         .bytes_per_pixel = 2,
     };
 
+    // ~1 MB transposition table in PSRAM, cleared per game. Freed on exit.
+    void* const tt_buf = JADE_MALLOC_PREFER_SPIRAM(ch_tt_sizeof(CHESS_TT_ENTRIES));
+    ch_tt_t tt;
+    ch_tt_init(&tt, tt_buf, CHESS_TT_ENTRIES);
+
+    // Seed the easy-level move RNG from the hardware RNG.
+    uint32_t rng = 0;
+    get_random(&rng, sizeof(rng));
+    if (rng == 0) rng = 0x1234567u;
+
     chess_nodes_t nodes;
     gui_activity_t* const act = make_chess_activity(&nodes);
 
     chg_game_t game;
     chg_action_t action = chg_init(&game, CH_WHITE);
+    ch_tt_clear(&tt);
 
     idletimer_set_min_timeout_secs(CHESS_MIN_TIMEOUT_SECS);
     gui_set_current_activity(act);
@@ -249,7 +270,7 @@ void chess_ui_run(void)
         if (action == CHG_ACT_ENGINE) {
             repaint(&game, &nodes, buf, &pic); // show "Thinking..." before blocking
             const chg_state_t before = game.state;
-            action = engine_turn(&game);
+            action = engine_turn(&game, &tt, &rng);
             if (game.state == before && before == CHG_ENGINE_THINK) {
                 // The search failed and the state machine is still waiting for
                 // a move it will never get. The ring is empty in this state, so
@@ -299,6 +320,7 @@ void chess_ui_run(void)
     // `buf`, and the GUI task repaints from the other core.
     gui_clear_picture(nodes.board);
     free(buf);
+    free(tt_buf);
 
     if (prev_act) {
         gui_set_current_activity(prev_act);
