@@ -62,6 +62,7 @@ typedef enum {
     CHG_ACT_NONE = 0, // just repaint
     CHG_ACT_ENGINE, // search, then call chg_engine_played()
     CHG_ACT_EXIT, // leave the activity
+    CHG_ACT_SETUP, // return to the pre-game setup menu (New game)
 } chg_action_t;
 
 typedef struct {

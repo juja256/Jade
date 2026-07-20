@@ -325,7 +325,9 @@ chg_action_t chg_select(chg_game_t* game)
         return CHG_ACT_NONE;
 
     case CHG_ENTRY_NEW:
-        return chg_init(game, game->human);
+        // The UI returns to the setup menu, which starts a fresh game (and
+        // clears the transposition table). It no longer re-inits in place.
+        return CHG_ACT_SETUP;
 
     case CHG_ENTRY_BACK:
         game->chosen_from = CHB_NO_SQ;
