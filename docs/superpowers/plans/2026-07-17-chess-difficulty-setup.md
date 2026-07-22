@@ -312,10 +312,29 @@ Expected: PASS — `all engine_tt tests passed`.
 Run: `cc -O2 -o /tmp/perft main/chess/test/perft_test.c main/chess/engine.c -Imain/chess && /tmp/perft`
 Expected: `all 26 perft cases passed`. This is the load-bearing check that the hash-in-state change did not break make/unmake.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Wire engine_tt_test into the runner**
+
+In `main/chess/test/run_tests.sh`, add `engine_tt_test` to the test loop so it runs as part of the suite. Change the line:
 
 ```bash
-git add main/chess/engine.h main/chess/engine.c main/chess/test/engine_tt_test.c
+for t in perft_test search_test render_test game_test; do
+```
+
+to:
+
+```bash
+for t in perft_test search_test render_test game_test engine_tt_test; do
+```
+
+(The loop compiles each test with `$SRCS` = `chess_game.c chess_board.c engine.c`; the extra objects are harmless because `engine_tt_test.c` has its own `main` and only references engine symbols.)
+
+Run: `./main/chess/test/run_tests.sh`
+Expected: all suites pass, including `engine_tt_test`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add main/chess/engine.h main/chess/engine.c main/chess/test/engine_tt_test.c main/chess/test/run_tests.sh
 git commit -m "chess: carry a Zobrist hash in the position (engine, foundation for TT)"
 ```
 
@@ -972,18 +991,68 @@ git commit -m "chess: search at the selected level with a live transposition tab
 ## Task 6: Setup menu, colour choice, level indicator, new-game flow
 
 **Files:**
+- Modify: `main/chess/chess_game.h` (add `CHG_ACT_SETUP` action)
+- Modify: `main/chess/chess_game.c` (make `CHG_ENTRY_NEW` return `CHG_ACT_SETUP`)
+- Modify: `main/chess/test/game_test.c` (assert the new-game signal)
 - Modify: `main/button_events.h` (menu button ids)
 - Modify: `main/chess/chess_ui.c` (setup menu, settings static, indicator, flow)
 
 **Interfaces:**
 - Consumes: `make_menu_activity`, `btn_data_t`, `gui_make_text`, `gui_update_text`, `gui_set_align`, `gui_set_current_activity`, `gui_activity_wait_event`, `GUI_EVENT` ids (from Task 5 wiring and existing includes); `chg_level_short`, `chg_level_label`, `chg_init_ex` (Task 4).
-- Produces: entering Chess opens the setup menu; Play launches a game with the chosen colour and level; the panel shows the level; New game returns to the menu.
+- Produces: a new game action `CHG_ACT_SETUP` returned by `chg_select` when the player picks `New game`; entering Chess opens the setup menu; Play launches a game with the chosen colour and level; the panel shows the level; `New game` returns to the setup menu (a fresh game, so the TT is cleared), and `Exit` leaves the app.
 
-Firmware glue; verified by driving libjade (Task 7).
+**Why the `CHG_ACT_SETUP` change:** the base `CHG_ENTRY_NEW` did an in-place `chg_init` and returned `CHG_ACT_NONE`, so the UI had no signal to return to the setup menu, and the transposition table was never re-cleared between games in a session (the Task 5 review flagged this). Returning a distinct action fixes both: `chess_ui.c` routes `New game` back to the setup menu, and every game — first or subsequent — starts from the same code path that clears the TT.
 
-- [ ] **Step 1: Add button ids**
+Firmware glue plus one small host-tested game-unit change; the glue is verified by driving libjade (Task 7), the game-unit change by `game_test.c`.
 
-In `main/button_events.h`, next to `BTN_SETTINGS_CHESS`, add:
+- [ ] **Step 1: Add the new-game action and the button ids**
+
+First, the game-unit signal. In `main/chess/chess_game.h`, add `CHG_ACT_SETUP` to the `chg_action_t` enum (after `CHG_ACT_EXIT`):
+
+```c
+typedef enum {
+    CHG_ACT_NONE = 0, // just repaint
+    CHG_ACT_ENGINE, // search, then call chg_engine_played()
+    CHG_ACT_EXIT, // leave the activity
+    CHG_ACT_SETUP, // return to the pre-game setup menu (New game)
+} chg_action_t;
+```
+
+In `main/chess/chess_game.c`, change the `CHG_ENTRY_NEW` case in `chg_select` from doing an in-place re-init to returning the new signal. Replace:
+
+```c
+    case CHG_ENTRY_NEW:
+        return chg_init(game, game->human);
+```
+
+with:
+
+```c
+    case CHG_ENTRY_NEW:
+        // The UI returns to the setup menu, which starts a fresh game (and
+        // clears the transposition table). It no longer re-inits in place.
+        return CHG_ACT_SETUP;
+```
+
+Add a test to `main/chess/test/game_test.c`. In `test_resign_and_exit` (or a small new test called from `main`), after reaching game-over, assert New game signals setup:
+
+```c
+static void test_new_game_returns_setup_signal(void) {
+    chg_game_t g;
+    chg_init(&g, CH_WHITE);
+    cycle_to(&g, "Resign");
+    chg_select(&g); // game over
+    check(cycle_to(&g, "New game"), "game-over offers New game");
+    check(chg_select(&g) == CHG_ACT_SETUP, "New game returns CHG_ACT_SETUP");
+}
+```
+
+Call `test_new_game_returns_setup_signal();` from `main` in the resign/exit section. Note: `test_new_game_resets` directly calls `chg_init` (not via `CHG_ENTRY_NEW`) to check reset behaviour and is unaffected; if its comment says "what CHG_ENTRY_NEW does", update it to "what returning to setup does".
+
+Run: `cc -O2 -o /tmp/gt main/chess/test/game_test.c main/chess/chess_game.c main/chess/chess_board.c main/chess/engine.c -Imain/chess && /tmp/gt`
+Expected: all pass, including the new assertion.
+
+Then the button ids. In `main/button_events.h`, next to `BTN_SETTINGS_CHESS`, add:
 
 ```c
     BTN_CHESS_COLOUR,
@@ -1102,20 +1171,21 @@ void chess_ui_run(void) {
 
     idletimer_set_min_timeout_secs(CHESS_MIN_TIMEOUT_SECS);
 
-    for (;;) {
+    bool running = true;
+    while (running) {
         const uint8_t colour = run_chess_setup(&rng);
-        if (colour == 0) break; // Exit chosen in the setup menu
+        if (colour == 0) break; // Exit chosen in the setup menu -> leave the app
 
         chess_nodes_t nodes;
         gui_activity_t* const act = make_chess_activity(&nodes);
-        ch_tt_clear(&tt);
+        ch_tt_clear(&tt); // every game (first or via New game) starts with a fresh table
         chg_game_t game;
         chg_action_t action = chg_init_ex(&game, colour, chess_level);
         gui_set_current_activity(act);
         repaint(&game, &nodes, buf, &pic);
 
         bool to_setup = false;
-        while (!to_setup) {
+        while (!to_setup && running) {
             if (action == CHG_ACT_ENGINE) {
                 repaint(&game, &nodes, buf, &pic);
                 const chg_state_t before = game.state;
@@ -1132,11 +1202,12 @@ void chess_ui_run(void) {
             case GUI_FRONT_CLICK_EVENT:
             case GUI_WHEEL_CLICK_EVENT:
                 action = chg_select(&game);
-                if (action == CHG_ACT_EXIT) to_setup = true; // New game / Exit -> back to setup
+                if (action == CHG_ACT_SETUP) to_setup = true;      // New game -> setup menu
+                else if (action == CHG_ACT_EXIT) running = false;  // Exit -> leave the app
                 break;
             default: break;
             }
-            if (!to_setup) repaint(&game, &nodes, buf, &pic);
+            if (!to_setup && running) repaint(&game, &nodes, buf, &pic);
         }
         gui_clear_picture(nodes.board);
     }
@@ -1148,7 +1219,7 @@ void chess_ui_run(void) {
 }
 ```
 
-> Note: the game-over ring already offers `New game` and `Exit`, both of which return `CHG_ACT_EXIT` from `chg_select`. Both now route back to the setup menu; picking `Exit` there leaves the app. This is the "New game returns to setup" flow from the spec.
+> Note: the game-over ring offers `New game` and `Exit`. `chg_select` now returns `CHG_ACT_SETUP` for `New game` (routes back to the setup menu, where the remembered colour/level are shown) and `CHG_ACT_EXIT` for `Exit` (leaves the app). Because each game is started from the top of the outer loop, `ch_tt_clear(&tt)` runs for every game, resolving the Task 5 finding that the TT was not re-cleared between games.
 
 - [ ] **Step 6: Add the level indicator to the panel**
 
@@ -1205,7 +1276,7 @@ Expected: `[100%] Built target jade`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add main/button_events.h main/chess/chess_ui.c
+git add main/chess/chess_game.h main/chess/chess_game.c main/chess/test/game_test.c main/button_events.h main/chess/chess_ui.c
 git commit -m "chess: pre-game setup menu (colour + level), level indicator, new-game flow"
 ```
 

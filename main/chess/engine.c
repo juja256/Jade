@@ -9,6 +9,54 @@
 
 #include <string.h>
 
+// Zobrist hashing. Keys are generated once from a fixed seed; they need only be
+// consistent within a single process, not across builds.
+static uint64_t zob_piece[12][64];
+static uint64_t zob_side;
+static uint64_t zob_castle[16];
+static uint64_t zob_ep[8];
+static bool zob_ready = false;
+
+static uint64_t zob_next(uint64_t* s) {
+    uint64_t x = *s;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    *s = x;
+    return x;
+}
+
+static void zob_ensure(void) {
+    if (zob_ready) return;
+    uint64_t s = 0x9E3779B97F4A7C15ULL;
+    for (int p = 0; p < 12; ++p)
+        for (int q = 0; q < 64; ++q) zob_piece[p][q] = zob_next(&s);
+    zob_side = zob_next(&s);
+    for (int i = 0; i < 16; ++i) zob_castle[i] = zob_next(&s);
+    for (int i = 0; i < 8; ++i) zob_ep[i] = zob_next(&s);
+    zob_ready = true;
+}
+
+// 0x88 square -> 0..63
+static inline int zob_sq(uint8_t sq) { return (CH_RANK(sq) << 3) | CH_FILE(sq); }
+// piece byte -> 0..11 (type 1..6, colour)
+static inline int zob_pidx(uint8_t pc) {
+    return (CH_TYPE(pc) - 1) + (CH_COLOUR(pc) == CH_BLACK ? 6 : 0);
+}
+static inline uint64_t zob_pc(uint8_t pc, uint8_t sq) { return zob_piece[zob_pidx(pc)][zob_sq(sq)]; }
+
+uint64_t ch_zobrist(const ch_pos_t* pos) {
+    zob_ensure();
+    uint64_t h = 0;
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) continue;
+        const uint8_t pc = pos->board[sq];
+        if (pc != CH_EMPTY) h ^= zob_pc(pc, (uint8_t)sq);
+    }
+    if (pos->side == CH_BLACK) h ^= zob_side;
+    h ^= zob_castle[pos->castle & 0x0F];
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+    return h;
+}
+
 // 0x88 move offsets. Square arithmetic is done in int to avoid uint8_t wrap;
 // CH_ONBOARD() then rejects anything that stepped off the board.
 static const int knight_off[8] = { -33, -31, -18, -14, 14, 18, 31, 33 };
@@ -46,6 +94,7 @@ void ch_init(ch_pos_t* pos)
     pos->fullmove = 1;
     pos->king_sq[CH_CIDX(CH_WHITE)] = CH_SQ(4, 0);
     pos->king_sq[CH_CIDX(CH_BLACK)] = CH_SQ(4, 7);
+    pos->hash = ch_zobrist(pos);
 }
 
 bool ch_from_fen(ch_pos_t* pos, const char* fen)
@@ -191,6 +240,7 @@ bool ch_from_fen(ch_pos_t* pos, const char* fen)
         }
     }
 
+    pos->hash = ch_zobrist(pos);
     return true;
 }
 
@@ -393,6 +443,7 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     undo->ep = pos->ep;
     undo->halfmove = pos->halfmove;
     undo->fullmove = pos->fullmove;
+    undo->hash = pos->hash;
 
     const uint8_t from = move->from;
     const uint8_t to = move->to;
@@ -400,16 +451,27 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     const uint8_t us = CH_COLOUR(pc);
     const uint8_t type = CH_TYPE(pc);
 
+    uint64_t h = pos->hash;
+    // Retire the old castling-rights and en-passant contributions; the new ones
+    // are XORed back in once they are known, below.
+    h ^= zob_castle[pos->castle & 0x0F];
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+
+    h ^= zob_pc(pc, from); // piece leaves `from`
+
     if (move->flags & CH_MF_EP) {
-        // The captured pawn sits beside `from`, not on `to`
         const uint8_t victim = (uint8_t)(CH_SQ(CH_FILE(to), CH_RANK(from)));
         undo->captured = pos->board[victim];
+        h ^= zob_pc(undo->captured, victim);
         pos->board[victim] = CH_EMPTY;
     } else {
         undo->captured = pos->board[to];
+        if (undo->captured != CH_EMPTY) h ^= zob_pc(undo->captured, to);
     }
 
-    pos->board[to] = (move->flags & CH_MF_PROMO) ? (uint8_t)(move->promo | us) : pc;
+    const uint8_t placed = (move->flags & CH_MF_PROMO) ? (uint8_t)(move->promo | us) : pc;
+    h ^= zob_pc(placed, to); // piece arrives at `to`
+    pos->board[to] = placed;
     pos->board[from] = CH_EMPTY;
 
     if (type == CH_KING) {
@@ -417,19 +479,29 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
     }
 
     if (move->flags & CH_MF_CASTLE) {
-        // Shift the rook; the king has already moved above
         const int home = CH_RANK(from);
         if (CH_FILE(to) == 6) {
-            pos->board[CH_SQ(5, home)] = pos->board[CH_SQ(7, home)];
+            const uint8_t rook = pos->board[CH_SQ(7, home)];
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(7, home));
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(5, home));
+            pos->board[CH_SQ(5, home)] = rook;
             pos->board[CH_SQ(7, home)] = CH_EMPTY;
         } else {
-            pos->board[CH_SQ(3, home)] = pos->board[CH_SQ(0, home)];
+            const uint8_t rook = pos->board[CH_SQ(0, home)];
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(0, home));
+            h ^= zob_pc(rook, (uint8_t)CH_SQ(3, home));
+            pos->board[CH_SQ(3, home)] = rook;
             pos->board[CH_SQ(0, home)] = CH_EMPTY;
         }
     }
 
     pos->castle &= (uint8_t)~(castle_mask[from] | castle_mask[to]);
     pos->ep = (move->flags & CH_MF_DOUBLE) ? (int8_t)((from + to) / 2) : CH_NO_EP;
+
+    h ^= zob_castle[pos->castle & 0x0F]; // new castling rights
+    if (pos->ep != CH_NO_EP) h ^= zob_ep[CH_FILE(pos->ep)];
+    h ^= zob_side; // side to move always flips
+    pos->hash = h;
 
     if (type == CH_PAWN || (move->flags & CH_MF_CAPTURE)) {
         pos->halfmove = 0;
@@ -444,6 +516,7 @@ void ch_make(ch_pos_t* pos, const ch_move_t* move, ch_undo_t* undo)
 
 void ch_unmake(ch_pos_t* pos, const ch_undo_t* undo)
 {
+    pos->hash = undo->hash;
     const ch_move_t* move = &undo->move;
     const uint8_t from = move->from;
     const uint8_t to = move->to;
@@ -568,6 +641,12 @@ ch_result_t ch_result(const ch_pos_t* pos)
 
 #define CH_INF 30000
 #define CH_MATE 29000
+
+// Mate scores (|score| within this of CH_MATE) are stored NODE-relative in the
+// TT and converted back to ROOT-relative on probe, so a mate value reached via
+// a transposition at a different ply is not misreported. Bound is well above
+// any reachable ply (search depth + quiescence).
+#define CH_MATE_THRESH (CH_MATE - 256)
 
 static const int piece_value[7] = { 0, 100, 320, 330, 500, 900, 0 };
 
@@ -749,8 +828,25 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
     return alpha;
 }
 
-static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
+static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt_t* tt)
 {
+    const int alpha_orig = alpha;
+
+    ch_tt_entry_t hit;
+    ch_move_t tt_move = { 0, 0, 0, 0 };
+    if (tt && ch_tt_probe(tt, pos->hash, &hit)) {
+        tt_move = hit.move;
+        int tt_score = hit.score;
+        if (tt_score > CH_MATE_THRESH) tt_score -= ply;
+        else if (tt_score < -CH_MATE_THRESH) tt_score += ply;
+        if (hit.depth >= depth) {
+            if (hit.flag == CH_TT_EXACT) return tt_score;
+            if (hit.flag == CH_TT_LOWER && tt_score > alpha) alpha = tt_score;
+            else if (hit.flag == CH_TT_UPPER && tt_score < beta) beta = tt_score;
+            if (alpha >= beta) return tt_score;
+        }
+    }
+
     if (depth <= 0) {
         return quiesce(pos, alpha, beta, CH_QUIESCE_MAX);
     }
@@ -758,8 +854,6 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
     ch_move_t moves[CH_MAX_MOVES];
     const int n = ch_gen_legal(pos, moves);
     if (n == 0) {
-        // Mate scores are graded by distance so the engine prefers a mate now
-        // over a mate later, and resists the reverse.
         return ch_in_check(pos, pos->side) ? -CH_MATE + ply : 0;
     }
     if (pos->halfmove >= 100) {
@@ -767,45 +861,137 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply)
     }
     sort_moves(pos, moves, n);
 
+    // If the TT suggested a move, search it first.
+    if (tt_move.from != tt_move.to) {
+        for (int i = 1; i < n; ++i) {
+            if (moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promo == tt_move.promo) {
+                const ch_move_t tmp = moves[0]; moves[0] = moves[i]; moves[i] = tmp;
+                break;
+            }
+        }
+    }
+
+    int best = -CH_INF;
+    ch_move_t best_move = moves[0];
     for (int i = 0; i < n; ++i) {
         ch_undo_t undo;
         ch_make(pos, &moves[i], &undo);
-        const int score = -negamax(pos, depth - 1, -beta, -alpha, ply + 1);
+        const int score = -negamax(pos, depth - 1, -beta, -alpha, ply + 1, tt);
         ch_unmake(pos, &undo);
-
-        if (score >= beta) {
-            return beta;
-        }
-        if (score > alpha) {
-            alpha = score;
-        }
+        if (score > best) { best = score; best_move = moves[i]; }
+        if (score > alpha) alpha = score;
+        if (alpha >= beta) break;
     }
-    return alpha;
+
+    if (tt) {
+        const uint8_t flag = (best <= alpha_orig) ? CH_TT_UPPER : (best >= beta) ? CH_TT_LOWER : CH_TT_EXACT;
+        int store_score = best;
+        if (store_score > CH_MATE_THRESH) store_score += ply;
+        else if (store_score < -CH_MATE_THRESH) store_score -= ply;
+        ch_tt_store(tt, pos->hash, depth, store_score, flag, best_move);
+    }
+    return best;
 }
 
-bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best)
-{
-    ch_move_t moves[CH_MAX_MOVES];
+static uint32_t xrng(uint32_t* s) {
+    uint32_t x = *s ? *s : 0x1234567u;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+// Root search to `depth` via iterative deepening, writing per-move scores into
+// `scores` (parallel to `moves`) and returning the best score. `moves`/`scores`
+// must hold CH_MAX_MOVES.
+//
+// The root uses a FULL window (-CH_INF, CH_INF) for every move, so scores[i] is
+// each move's exact value -- the randomness pool in ch_search_ex depends on
+// that. Alpha-beta pruning still happens in the deeper negamax calls, and the
+// TT (seeded across ID iterations) supplies move ordering there. The root move
+// list is not reordered, so moves[i] and scores[i] stay parallel for the caller.
+static int search_root(ch_pos_t* pos, int depth, ch_tt_t* tt, ch_move_t* moves, int* scores, int* count) {
     const int n = ch_gen_legal(pos, moves);
-    if (n == 0) {
-        return false;
-    }
+    *count = n;
+    if (n == 0) return 0;
     sort_moves(pos, moves, n);
 
-    int best_score = -CH_INF;
-    *best = moves[0];
-    for (int i = 0; i < n; ++i) {
-        ch_undo_t undo;
-        ch_make(pos, &moves[i], &undo);
-        const int score = -negamax(pos, depth - 1, -CH_INF, -best_score, 1);
-        ch_unmake(pos, &undo);
-
-        if (score > best_score) {
-            best_score = score;
-            *best = moves[i];
+    int best = -CH_INF;
+    for (int d = 1; d <= depth; ++d) {
+        best = -CH_INF;
+        for (int i = 0; i < n; ++i) {
+            ch_undo_t undo;
+            ch_make(pos, &moves[i], &undo);
+            scores[i] = -negamax(pos, d - 1, -CH_INF, CH_INF, 1, tt);
+            ch_unmake(pos, &undo);
+            if (scores[i] > best) best = scores[i];
         }
     }
+    return best;
+}
+
+int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt) {
+    ch_move_t moves[CH_MAX_MOVES];
+    int scores[CH_MAX_MOVES];
+    int n = 0;
+    return search_root(pos, depth, tt, moves, scores, &n);
+}
+
+bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_tt_t* tt, ch_move_t* best) {
+    ch_move_t moves[CH_MAX_MOVES];
+    int scores[CH_MAX_MOVES];
+    int n = 0;
+    const int best_score = search_root(pos, depth, tt, moves, scores, &n);
+    if (n == 0) return false;
+
+    if (margin > 0 && rng_state) {
+        // Collect moves within `margin` of the best, pick one at random.
+        int pool[CH_MAX_MOVES]; int m = 0;
+        for (int i = 0; i < n; ++i) if (scores[i] >= best_score - margin) pool[m++] = i;
+        *best = moves[pool[xrng(rng_state) % (uint32_t)m]];
+        return true;
+    }
+
+    // Strict best move.
+    int bi = 0;
+    for (int i = 1; i < n; ++i) if (scores[i] > scores[bi]) bi = i;
+    *best = moves[bi];
     return true;
+}
+
+bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best) {
+    return ch_search_ex(pos, depth, 0, NULL, NULL, best);
+}
+
+// Transposition table implementation
+size_t ch_tt_sizeof(size_t count) { return count * sizeof(ch_tt_entry_t); }
+
+void ch_tt_init(ch_tt_t* tt, void* buffer, size_t count) {
+    tt->entries = (ch_tt_entry_t*)buffer;
+    tt->count = count;
+    ch_tt_clear(tt);
+}
+
+void ch_tt_clear(ch_tt_t* tt) {
+    memset(tt->entries, 0, tt->count * sizeof(ch_tt_entry_t));
+    // flag CH_TT_NONE == 0, so a zeroed table reads as empty
+}
+
+bool ch_tt_probe(const ch_tt_t* tt, uint64_t key, ch_tt_entry_t* out) {
+    const ch_tt_entry_t* e = &tt->entries[key % tt->count];
+    if (e->flag == CH_TT_NONE || e->key != key) return false;
+    *out = *e;
+    return true;
+}
+
+void ch_tt_store(ch_tt_t* tt, uint64_t key, int depth, int score, uint8_t flag, ch_move_t move) {
+    ch_tt_entry_t* e = &tt->entries[key % tt->count];
+    // Depth-preferred replacement: keep a deeper existing entry for the same key.
+    if (e->flag != CH_TT_NONE && e->key == key && e->depth > depth) return;
+    e->key = key;
+    e->move = move;
+    e->score = (int16_t)score;
+    e->depth = (uint8_t)depth;
+    e->flag = flag;
 }
 
 #endif // AMALGAMATED_BUILD

@@ -1,9 +1,22 @@
 # Chess App: Difficulty, Setup Menu, Stronger Engine — Design
 
 **Date:** 2026-07-17
-**Status:** Design, pending implementation
+**Status:** Implemented (see plan `docs/superpowers/plans/2026-07-17-chess-difficulty-setup.md`)
 **Builds on:** [2026-07-16-chess-app-design.md](./2026-07-16-chess-app-design.md)
-**Target:** Personal / DIY build. Confirmed working on a physical Jade Plus.
+**Target:** Personal / DIY build. Base app confirmed working on a physical Jade Plus.
+
+## Verification (as built)
+
+| Area | Status |
+|---|---|
+| Zobrist hash correctness | **Proven** — perft 26/26 still green after hash-in-state; incremental hash == recompute over a move-tree walk (captures, ep, castling, promotion) |
+| Transposition table | **Tested** — store/probe/clear unit tests; **TT-invariance** (TT never changes the result) verified across a 1,625-case stress run |
+| Iterative deepening + search | **Tested** — mate-finding intact; margin stays within bound; margin 0 deterministic; mate distances normalized through the TT |
+| Level mapping | **Tested** — host asserts Lv1--Lv5 → (depth, margin) and label fit |
+| New-game signal (`CHG_ACT_SETUP`) | **Tested** — host `game_test` asserts New game returns the setup signal |
+| Setup menu, colour, level indicator, flow | **Run under libjade** — driven via `send_input`/`get_display_bytes`: setup menu renders (Colour/Level/Play), level cycles Lv2→Lv4 in place, game starts at the chosen level, `Lv` indicator shows, engine replies (1. e4 Nf6) |
+| Device build/size | **Measured** — `jade_v2 --chess`: +12.7 KB flash, +6.35 KB internal `.bss` (Zobrist table); ~1 MB TT is runtime PSRAM, freed on exit |
+| Physical device | **Not re-flashed** for this feature (base app was) |
 
 ## Goal
 

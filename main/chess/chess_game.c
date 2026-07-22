@@ -213,11 +213,47 @@ chg_action_t chg_set_position(chg_game_t* game, const ch_pos_t* pos, uint8_t hum
     return enter_turn(game);
 }
 
-chg_action_t chg_init(chg_game_t* game, uint8_t human_colour)
-{
+void chg_level_params(uint8_t level, int* depth, int* margin) {
+    switch (level) {
+    case 1: *depth = 3; *margin = 40; return;
+    case 3: *depth = 5; *margin = 0;  return;
+    case 4: *depth = 6; *margin = 0;  return;
+    case 5: *depth = 7; *margin = 0;  return;
+    case 2:
+    default: *depth = 4; *margin = 0; return; // Lv2 default / clamp
+    }
+}
+
+const char* chg_level_label(uint8_t level) {
+    switch (level) {
+    case 1: return "Lv1 ~1250";
+    case 3: return "Lv3 ~1650";
+    case 4: return "Lv4 ~1800";
+    case 5: return "Lv5 ~1900";
+    default: return "Lv2 ~1450";
+    }
+}
+
+const char* chg_level_short(uint8_t level) {
+    switch (level) {
+    case 1: return "Lv1";
+    case 3: return "Lv3";
+    case 4: return "Lv4";
+    case 5: return "Lv5";
+    default: return "Lv2";
+    }
+}
+
+chg_action_t chg_init_ex(chg_game_t* game, uint8_t human_colour, uint8_t level) {
     ch_pos_t start;
     ch_init(&start);
-    return chg_set_position(game, &start, human_colour);
+    const chg_action_t act = chg_set_position(game, &start, human_colour);
+    game->level = (level >= 1 && level <= CHG_NUM_LEVELS) ? level : 2;
+    return act;
+}
+
+chg_action_t chg_init(chg_game_t* game, uint8_t human_colour) {
+    return chg_init_ex(game, human_colour, 2);
 }
 
 void chg_prev(chg_game_t* game)
@@ -289,7 +325,9 @@ chg_action_t chg_select(chg_game_t* game)
         return CHG_ACT_NONE;
 
     case CHG_ENTRY_NEW:
-        return chg_init(game, game->human);
+        // The UI returns to the setup menu, which starts a fresh game (and
+        // clears the transposition table). It no longer re-inits in place.
+        return CHG_ACT_SETUP;
 
     case CHG_ENTRY_BACK:
         game->chosen_from = CHB_NO_SQ;
