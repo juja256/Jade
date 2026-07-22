@@ -331,6 +331,15 @@ gesture.
 The app appears in the `Options` menu. It needs no wallet, and is available
 whether or not the device is initialised or unlocked.
 
+Opening it shows a setup menu: choose your **colour** (White, Black or Random)
+and a **difficulty level** (Lv1--Lv5, roughly depth 3 to 7, shown with a rough
+ELO estimate), then `Play`. The play screen shows the current level. `New game`
+after a result returns to this menu so you can adjust before replaying; `Exit`
+leaves the app. The chosen colour and level are remembered for the session only
+(reset on reboot). The engine uses a transposition table and iterative deepening,
+so the higher levels search deep enough to see basic tactics -- Lv5 (depth 7) is
+deliberately slow, several seconds to tens of seconds per move on device.
+
 ## Building it
 
 Pass `--chess` to `switch_to.sh`, e.g. for a Jade Plus development build:
