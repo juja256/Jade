@@ -650,6 +650,19 @@ ch_result_t ch_result(const ch_pos_t* pos)
 
 static const int piece_value[7] = { 0, 100, 320, 330, 500, 900, 0 };
 
+// Killer moves: up to two quiet moves per ply that caused a beta cutoff. Tried
+// early in ordering (just below captures) so similar cutoffs recur cheaply.
+// File-static because the search is single-threaded (one search at a time,
+// serialised by the temporary-task mutex on device); reset at each search start.
+// A slot is empty when from == to.
+#define CH_MAX_PLY 40
+static ch_move_t g_killers[CH_MAX_PLY][2];
+
+static bool move_eq(const ch_move_t* a, const ch_move_t* b)
+{
+    return a->from == b->from && a->to == b->to && a->promo == b->promo;
+}
+
 // Piece-square tables, from white's point of view, indexed by rank*8+file with
 // rank 0 = white's back rank. Black reads them mirrored.
 // clang-format off
@@ -759,7 +772,9 @@ static int evaluate(const ch_pos_t* pos)
 
 // Order captures first, most-valuable-victim first. Cheap, and worth far more
 // than its cost in a plain alpha-beta.
-static void sort_moves(const ch_pos_t* pos, ch_move_t* moves, int n)
+// `killers` is a 2-element array of quiet cutoff moves for this ply (may be
+// NULL). Killer quiets sort just below promotions and above ordinary quiets.
+static void sort_moves(const ch_pos_t* pos, ch_move_t* moves, int n, const ch_move_t* killers)
 {
     int score[CH_MAX_MOVES];
     for (int i = 0; i < n; ++i) {
@@ -769,6 +784,10 @@ static void sort_moves(const ch_pos_t* pos, ch_move_t* moves, int n)
             score[i] = 1000 + piece_value[victim] - piece_value[attacker] / 10;
         } else if (moves[i].flags & CH_MF_PROMO) {
             score[i] = 900;
+        } else if (killers && killers[0].from != killers[0].to && move_eq(&moves[i], &killers[0])) {
+            score[i] = 850;
+        } else if (killers && killers[1].from != killers[1].to && move_eq(&moves[i], &killers[1])) {
+            score[i] = 840;
         } else {
             score[i] = 0;
         }
@@ -807,7 +826,7 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
 
     ch_move_t moves[CH_MAX_MOVES];
     const int n = ch_gen_legal(pos, moves);
-    sort_moves(pos, moves, n);
+    sort_moves(pos, moves, n, NULL); // quiescence: captures dominate, no killers
 
     for (int i = 0; i < n; ++i) {
         if (!(moves[i].flags & (CH_MF_CAPTURE | CH_MF_PROMO))) {
@@ -829,6 +848,26 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
 }
 
 uint64_t ch_search_nodes = 0;
+
+// True if `side` has any piece other than pawns and the king. Null-move pruning
+// is unsafe without one (zugzwang), so this gates it.
+static bool has_non_pawn_material(const ch_pos_t* pos, uint8_t side)
+{
+    for (int sq = 0; sq < 128; ++sq) {
+        if (!CH_ONBOARD(sq)) {
+            continue;
+        }
+        const uint8_t pc = pos->board[sq];
+        if (pc == CH_EMPTY || CH_COLOUR(pc) != side) {
+            continue;
+        }
+        const uint8_t t = CH_TYPE(pc);
+        if (t != CH_PAWN && t != CH_KING) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt_t* tt)
 {
@@ -856,13 +895,40 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt
 
     ch_move_t moves[CH_MAX_MOVES];
     const int n = ch_gen_legal(pos, moves);
+    const bool in_check = ch_in_check(pos, pos->side);
     if (n == 0) {
-        return ch_in_check(pos, pos->side) ? -CH_MATE + ply : 0;
+        return in_check ? -CH_MATE + ply : 0;
     }
     if (pos->halfmove >= 100) {
         return 0;
     }
-    sort_moves(pos, moves, n);
+
+    // Null-move pruning: if handing the opponent a free move still leaves us at
+    // or above beta (verified by a shallow reduced-depth search), the position
+    // is too strong to be worth a full search -- prune. Skipped in check
+    // (cannot legally pass out of check), at shallow depth, near mate scores,
+    // and with no non-pawn material (zugzwang, where passing may be forced-good).
+    // Not TT-gated, so the with/without-TT search still returns identical scores.
+    if (depth >= 3 && !in_check && beta < CH_MATE_THRESH && has_non_pawn_material(pos, pos->side)) {
+        const int R = 2;
+        const int8_t saved_ep = pos->ep;
+        const uint64_t saved_hash = pos->hash;
+        pos->hash ^= zob_side;
+        if (pos->ep != CH_NO_EP) {
+            pos->hash ^= zob_ep[CH_FILE(pos->ep)];
+        }
+        pos->ep = CH_NO_EP;
+        pos->side = CH_OPP(pos->side);
+        const int null_score = -negamax(pos, depth - 1 - R, -beta, -beta + 1, ply + 1, tt);
+        pos->side = CH_OPP(pos->side);
+        pos->ep = saved_ep;
+        pos->hash = saved_hash;
+        if (null_score >= beta) {
+            return beta;
+        }
+    }
+
+    sort_moves(pos, moves, n, (ply < CH_MAX_PLY) ? g_killers[ply] : NULL);
 
     // If the TT suggested a move, search it first.
     if (tt_move.from != tt_move.to) {
@@ -883,7 +949,15 @@ static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt
         ch_unmake(pos, &undo);
         if (score > best) { best = score; best_move = moves[i]; }
         if (score > alpha) alpha = score;
-        if (alpha >= beta) break;
+        if (alpha >= beta) {
+            // Remember a quiet cutoff move as a killer for this ply.
+            if (!(moves[i].flags & (CH_MF_CAPTURE | CH_MF_PROMO)) && ply < CH_MAX_PLY
+                && !move_eq(&moves[i], &g_killers[ply][0])) {
+                g_killers[ply][1] = g_killers[ply][0];
+                g_killers[ply][0] = moves[i];
+            }
+            break;
+        }
     }
 
     if (tt) {
@@ -918,7 +992,7 @@ static int search_root(ch_pos_t* pos, int depth, int margin, ch_tt_t* tt, ch_mov
     const int n = ch_gen_legal(pos, moves);
     *count = n;
     if (n == 0) return 0;
-    sort_moves(pos, moves, n);
+    sort_moves(pos, moves, n, NULL); // root ordering comes from the TT across ID iterations
 
     int best = -CH_INF;
     for (int d = 1; d <= depth; ++d) {
@@ -937,6 +1011,7 @@ static int search_root(ch_pos_t* pos, int depth, int margin, ch_tt_t* tt, ch_mov
 
 int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt) {
     ch_search_nodes = 0;
+    memset(g_killers, 0, sizeof(g_killers));
     ch_move_t moves[CH_MAX_MOVES];
     int scores[CH_MAX_MOVES];
     int n = 0;
@@ -945,6 +1020,7 @@ int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt) {
 
 bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_tt_t* tt, ch_move_t* best) {
     ch_search_nodes = 0;
+    memset(g_killers, 0, sizeof(g_killers));
     ch_move_t moves[CH_MAX_MOVES];
     int scores[CH_MAX_MOVES];
     int n = 0;
