@@ -394,7 +394,7 @@ static void test_ring_never_overflows(void)
 
 static void test_level_params(void) {
     struct { uint8_t lv; int depth; int margin; } cases[] = {
-        {1,3,40},{2,4,0},{3,5,0},{4,6,0},{5,7,0}
+        {1,3,0},{2,4,0},{3,5,0},{4,6,0},{5,7,0}
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
         int d = -1, m = -1;

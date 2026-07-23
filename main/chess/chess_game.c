@@ -215,7 +215,7 @@ chg_action_t chg_set_position(chg_game_t* game, const ch_pos_t* pos, uint8_t hum
 
 void chg_level_params(uint8_t level, int* depth, int* margin) {
     switch (level) {
-    case 1: *depth = 3; *margin = 40; return;
+    case 1: *depth = 3; *margin = 0;  return;
     case 3: *depth = 5; *margin = 0;  return;
     case 4: *depth = 6; *margin = 0;  return;
     case 5: *depth = 7; *margin = 0;  return;
@@ -226,7 +226,7 @@ void chg_level_params(uint8_t level, int* depth, int* margin) {
 
 const char* chg_level_label(uint8_t level) {
     switch (level) {
-    case 1: return "Lv1 ~1250";
+    case 1: return "Lv1 ~1350";
     case 3: return "Lv3 ~1650";
     case 4: return "Lv4 ~1800";
     case 5: return "Lv5 ~1900";
