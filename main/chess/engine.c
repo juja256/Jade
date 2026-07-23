@@ -828,8 +828,11 @@ static int quiesce(ch_pos_t* pos, int alpha, int beta, int depth)
     return alpha;
 }
 
+uint64_t ch_search_nodes = 0;
+
 static int negamax(ch_pos_t* pos, int depth, int alpha, int beta, int ply, ch_tt_t* tt)
 {
+    ++ch_search_nodes;
     const int alpha_orig = alpha;
 
     ch_tt_entry_t hit;
@@ -904,12 +907,14 @@ static uint32_t xrng(uint32_t* s) {
 // `scores` (parallel to `moves`) and returning the best score. `moves`/`scores`
 // must hold CH_MAX_MOVES.
 //
-// The root uses a FULL window (-CH_INF, CH_INF) for every move, so scores[i] is
-// each move's exact value -- the randomness pool in ch_search_ex depends on
-// that. Alpha-beta pruning still happens in the deeper negamax calls, and the
-// TT (seeded across ID iterations) supplies move ordering there. The root move
-// list is not reordered, so moves[i] and scores[i] stay parallel for the caller.
-static int search_root(ch_pos_t* pos, int depth, ch_tt_t* tt, ch_move_t* moves, int* scores, int* count) {
+// The root window's lower bound is `best_so_far - margin`, so alpha-beta
+// narrowing still prunes (each root move only has to beat the running best by
+// `margin` to matter), while every move within `margin` of the best is scored
+// exactly for the randomness pool in ch_search_ex. margin 0 is the standard
+// efficient root search. A FULL window here instead would disable root pruning
+// entirely and blow up the node count (~8x at depth 7). The root move list is
+// not reordered, so moves[i] and scores[i] stay parallel for the caller.
+static int search_root(ch_pos_t* pos, int depth, int margin, ch_tt_t* tt, ch_move_t* moves, int* scores, int* count) {
     const int n = ch_gen_legal(pos, moves);
     *count = n;
     if (n == 0) return 0;
@@ -921,7 +926,8 @@ static int search_root(ch_pos_t* pos, int depth, ch_tt_t* tt, ch_move_t* moves, 
         for (int i = 0; i < n; ++i) {
             ch_undo_t undo;
             ch_make(pos, &moves[i], &undo);
-            scores[i] = -negamax(pos, d - 1, -CH_INF, CH_INF, 1, tt);
+            const int alpha = (best == -CH_INF) ? -CH_INF : best - margin;
+            scores[i] = -negamax(pos, d - 1, -CH_INF, -alpha, 1, tt);
             ch_unmake(pos, &undo);
             if (scores[i] > best) best = scores[i];
         }
@@ -930,17 +936,27 @@ static int search_root(ch_pos_t* pos, int depth, ch_tt_t* tt, ch_move_t* moves, 
 }
 
 int ch_search_bestscore(ch_pos_t* pos, int depth, ch_tt_t* tt) {
+    ch_search_nodes = 0;
     ch_move_t moves[CH_MAX_MOVES];
     int scores[CH_MAX_MOVES];
     int n = 0;
-    return search_root(pos, depth, tt, moves, scores, &n);
+    return search_root(pos, depth, 0, tt, moves, scores, &n);
 }
 
 bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_tt_t* tt, ch_move_t* best) {
+    ch_search_nodes = 0;
     ch_move_t moves[CH_MAX_MOVES];
     int scores[CH_MAX_MOVES];
     int n = 0;
-    const int best_score = search_root(pos, depth, tt, moves, scores, &n);
+    // For the randomness pool we need EXACT scores for every move within
+    // `margin` of the best, and moves outside it to fail low *strictly* below
+    // the pool threshold. A root window low bound of best-margin-1 does both:
+    // an in-margin move (value >= best-margin) exceeds it and is scored exactly,
+    // while an out-of-margin move (value < best-margin, i.e. <= best-margin-1 in
+    // integer cp) fails low with a bound <= best-margin-1 < best-margin and is
+    // excluded. margin 0 / no rng searches strict-best for tightest pruning.
+    const int root_margin = (margin > 0 && rng_state) ? margin + 1 : 0;
+    const int best_score = search_root(pos, depth, root_margin, tt, moves, scores, &n);
     if (n == 0) return false;
 
     if (margin > 0 && rng_state) {

@@ -172,6 +172,22 @@ static void test_margin_zero_is_deterministic(void) {
     check(a.from == b.from && a.to == b.to, "margin 0 is deterministic");
 }
 
+// Guards against the root search losing alpha-beta pruning. Kiwipete to depth 5
+// visits ~60k nodes with pruning; a full-window root (no root cutoffs) blew this
+// past 330k and made high levels take minutes on device. The ceiling has ~2.4x
+// headroom over the pruned count but is far below the unpruned one.
+static void test_search_prunes(void) {
+    void* buf = malloc(ch_tt_sizeof(1 << 16));
+    ch_tt_t tt; ch_tt_init(&tt, buf, 1 << 16);
+    ch_pos_t pos;
+    ch_from_fen(&pos, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    ch_search_bestscore(&pos, 5, &tt);
+    char what[80];
+    snprintf(what, sizeof(what), "depth-5 root prunes (%llu nodes < 150000)", (unsigned long long)ch_search_nodes);
+    check(ch_search_nodes < 150000, what);
+    free(buf);
+}
+
 int main(void) {
     printf("\nzobrist\n");
     test_hash_matches_recompute_after_moves();
@@ -186,6 +202,7 @@ int main(void) {
     test_tt_mate_consistency();
     test_margin_stays_within_bound();
     test_margin_zero_is_deterministic();
+    test_search_prunes();
 
     if (failures) { printf("\n%d test(s) FAILED\n", failures); return 1; }
     printf("\nall engine_tt tests passed\n");

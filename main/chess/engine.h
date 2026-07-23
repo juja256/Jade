@@ -173,4 +173,9 @@ bool ch_search_ex(ch_pos_t* pos, int depth, int margin, uint32_t* rng_state, ch_
 // Strict best-move search (margin 0, no randomness, no table).
 bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
 
+// Number of search nodes visited by the last ch_search*/ch_search_bestscore
+// call. Reset at the start of each search. Useful for tuning and as a
+// pruning-regression guard -- a search that stops pruning shows up here.
+extern uint64_t ch_search_nodes;
+
 #endif /* CHESS_ENGINE_H_ */
