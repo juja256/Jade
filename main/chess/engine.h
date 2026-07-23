@@ -178,4 +178,9 @@ bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best);
 // pruning-regression guard -- a search that stops pruning shows up here.
 extern uint64_t ch_search_nodes;
 
+// If the position is in the opening book, write the booked move to `out` and
+// return true; the caller can play it instantly instead of searching. The book
+// is built lazily on first call. Returns false once the game leaves book.
+bool ch_book_move(const ch_pos_t* pos, ch_move_t* out);
+
 #endif /* CHESS_ENGINE_H_ */

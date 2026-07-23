@@ -188,6 +188,30 @@ static void test_search_prunes(void) {
     free(buf);
 }
 
+static bool is_uci(const ch_move_t* m, const char* uci) {
+    return m->from == CH_SQ(uci[0] - 'a', uci[1] - '1') && m->to == CH_SQ(uci[2] - 'a', uci[3] - '1');
+}
+
+static void test_opening_book(void) {
+    ch_pos_t pos; ch_init(&pos);
+    ch_move_t mv;
+    check(ch_book_move(&pos, &mv) && is_uci(&mv, "e2e4"), "book plays 1.e4 from the start");
+    ch_undo_t u;
+    ch_make(&pos, &mv, &u);
+    check(ch_book_move(&pos, &mv) && is_uci(&mv, "e7e5"), "book replies 1...e5");
+    ch_make(&pos, &mv, &u);
+    check(ch_book_move(&pos, &mv) && is_uci(&mv, "g1f3"), "book plays 2.Nf3");
+
+    // An offbeat first move (1.a4) leaves book immediately.
+    ch_pos_t off; ch_init(&off);
+    ch_move_t legal[CH_MAX_MOVES];
+    const int nl = ch_gen_legal(&off, legal);
+    for (int i = 0; i < nl; ++i) {
+        if (is_uci(&legal[i], "a2a4")) { ch_undo_t uu; ch_make(&off, &legal[i], &uu); break; }
+    }
+    check(!ch_book_move(&off, &mv), "position after 1.a4 is not in the book");
+}
+
 int main(void) {
     printf("\nzobrist\n");
     test_hash_matches_recompute_after_moves();
@@ -203,6 +227,9 @@ int main(void) {
     test_margin_stays_within_bound();
     test_margin_zero_is_deterministic();
     test_search_prunes();
+
+    printf("\nbook\n");
+    test_opening_book();
 
     if (failures) { printf("\n%d test(s) FAILED\n", failures); return 1; }
     printf("\nall engine_tt tests passed\n");

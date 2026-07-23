@@ -1054,6 +1054,146 @@ bool ch_search(ch_pos_t* pos, int depth, ch_move_t* best) {
     return ch_search_ex(pos, depth, 0, NULL, NULL, best);
 }
 
+// ---------------------------------------------------------------------------
+// Opening book
+// ---------------------------------------------------------------------------
+// Common mainlines as UCI move sequences, replayed from the start position on
+// first use. Every position along a line maps to the move that continues it,
+// so whichever colour the engine plays, a booked reply exists while the game
+// stays in book. This keeps the engine out of slow, wide opening searches
+// (its worst case) and gives principled opening moves the material+PST eval
+// would not find. The book is keyed by pos->hash, computed by the current
+// Zobrist keys -- if those ever change the book simply stops matching (a miss,
+// never a crash), and book_self_consistent() lets a test catch that.
+static const char* const book_lines[] = {
+    "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7", // Ruy Lopez
+    "e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 d2d3 f8c5",           // Italian
+    "e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4",                // Scotch
+    "e2e4 e7e5 g1f3 g8f6",                               // Petroff
+    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6", // Najdorf
+    "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 b1c3",      // Sicilian ...Nc6
+    "e2e4 e7e6 d2d4 d7d5 b1c3 g8f6",                     // French
+    "e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4",                // Caro-Kann
+    "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5 f8e7",           // QGD
+    "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3",                // Slav
+    "d2d4 d7d5 c2c4 d5c4 g1f3 g8f6",                     // QGA
+    "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6",           // King's Indian
+    "d2d4 g8f6 c2c4 e7e6 g1f3 d7d5",                     // QGD/Nimzo
+    "c2c4 e7e5 b1c3 g8f6",                               // English
+    "g1f3 d7d5 d2d4 g8f6 c2c4 e7e6",                     // Reti->QGD
+};
+
+#define BOOK_MAX_ENTRIES 256
+typedef struct {
+    uint64_t hash;
+    ch_move_t move;
+} book_entry_t;
+static book_entry_t book_entries[BOOK_MAX_ENTRIES];
+static int book_count = -1; // -1 == not yet built
+
+// Parse a UCI move ("e2e4", "a7a8q") to the matching legal move in `pos`.
+static bool book_parse_uci(const ch_pos_t* pos, const char* uci, ch_move_t* out)
+{
+    const uint8_t from = (uint8_t)CH_SQ(uci[0] - 'a', uci[1] - '1');
+    const uint8_t to = (uint8_t)CH_SQ(uci[2] - 'a', uci[3] - '1');
+    uint8_t promo = 0;
+    switch (uci[4]) {
+    case 'q': promo = CH_QUEEN; break;
+    case 'r': promo = CH_ROOK; break;
+    case 'b': promo = CH_BISHOP; break;
+    case 'n': promo = CH_KNIGHT; break;
+    default: break;
+    }
+    ch_move_t moves[CH_MAX_MOVES];
+    const int nm = ch_gen_legal(pos, moves);
+    for (int i = 0; i < nm; ++i) {
+        if (moves[i].from != from || moves[i].to != to) {
+            continue;
+        }
+        if ((moves[i].flags & CH_MF_PROMO) && promo && moves[i].promo != promo) {
+            continue;
+        }
+        *out = moves[i];
+        return true;
+    }
+    return false;
+}
+
+static void book_add(uint64_t hash, const ch_move_t* mv)
+{
+    for (int i = 0; i < book_count; ++i) {
+        if (book_entries[i].hash == hash) {
+            return; // first line to reach a position wins
+        }
+    }
+    if (book_count >= BOOK_MAX_ENTRIES) {
+        return;
+    }
+    book_entries[book_count].hash = hash;
+    book_entries[book_count].move = *mv;
+    ++book_count;
+}
+
+static void book_build(void)
+{
+    book_count = 0;
+    for (size_t l = 0; l < sizeof(book_lines) / sizeof(book_lines[0]); ++l) {
+        ch_pos_t pos;
+        ch_init(&pos);
+        const char* p = book_lines[l];
+        while (*p) {
+            while (*p == ' ') {
+                ++p;
+            }
+            char uci[6] = { 0 };
+            int k = 0;
+            while (*p && *p != ' ' && k < 5) {
+                uci[k++] = *p++;
+            }
+            if (k < 4) {
+                break;
+            }
+            ch_move_t mv;
+            if (!book_parse_uci(&pos, uci, &mv)) {
+                break; // malformed line -- stop it here rather than corrupt the book
+            }
+            book_add(pos.hash, &mv);
+            ch_undo_t u;
+            ch_make(&pos, &mv, &u);
+        }
+    }
+    // Insertion sort by hash for binary-search probing (book is small).
+    for (int i = 1; i < book_count; ++i) {
+        const book_entry_t e = book_entries[i];
+        int j = i - 1;
+        for (; j >= 0 && book_entries[j].hash > e.hash; --j) {
+            book_entries[j + 1] = book_entries[j];
+        }
+        book_entries[j + 1] = e;
+    }
+}
+
+bool ch_book_move(const ch_pos_t* pos, ch_move_t* out)
+{
+    if (book_count < 0) {
+        book_build();
+    }
+    int lo = 0, hi = book_count - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (book_entries[mid].hash == pos->hash) {
+            *out = book_entries[mid].move;
+            return true;
+        }
+        if (book_entries[mid].hash < pos->hash) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return false;
+}
+
 // Transposition table implementation
 size_t ch_tt_sizeof(size_t count) { return count * sizeof(ch_tt_entry_t); }
 

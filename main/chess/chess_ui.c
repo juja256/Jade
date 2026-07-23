@@ -300,6 +300,14 @@ static void repaint(const chg_game_t* game, const chess_nodes_t* nodes, uint16_t
 // "Thinking..." indicator while it runs.
 static chg_action_t engine_turn(chg_game_t* game, ch_tt_t* tt, uint32_t* rng)
 {
+    // While the game is still in the opening book, play the booked move
+    // instantly -- no search. This eliminates the slow, wide opening searches
+    // (the engine's worst case) for the first several moves.
+    ch_move_t booked;
+    if (ch_book_move(&game->view.pos, &booked)) {
+        return chg_engine_played(game, &booked);
+    }
+
     search_args_t args = {0};
     args.pos = game->view.pos;
     args.found = false;
