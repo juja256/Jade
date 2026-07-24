@@ -4,6 +4,7 @@ services:
     volumes:
       - .:/host/jade/
       - /dev/serial/by-id:/dev/serial/by-id
+      - /dev:/dev
     working_dir: /host/jade/
     privileged: true
     tty: true
