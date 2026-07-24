@@ -284,9 +284,6 @@ gui_activity_t* make_uninitialised_settings_activity(void)
               { .txt = "USB Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_USBSTORAGE },
 #endif
               { .txt = "BIP39 Passphrase", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BIP39_PASSPHRASE },
-#ifdef CONFIG_CHESS_APP
-              { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
-#endif
               { .txt = "Settings", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_PREFS } };
 
     return make_menu_activity("Options", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
@@ -300,9 +297,6 @@ gui_activity_t* make_locked_settings_activity(void)
     btn_data_t menubtns[]
         = { { .txt = "BIP39 Passphrase", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BIP39_PASSPHRASE },
               { .txt = "Device", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE },
-#ifdef CONFIG_CHESS_APP
-              { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
-#endif
               { .txt = "Temporary Signer", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_TEMPORARY_WALLET_LOGIN } };
 
     return make_menu_activity("Options", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
@@ -317,9 +311,6 @@ gui_activity_t* make_unlocked_settings_activity(void)
         { .txt = "Device", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DEVICE },
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(CONFIG_HAS_BATTERY)
         { .txt = "USB Storage", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_USBSTORAGE },
-#endif
-#ifdef CONFIG_CHESS_APP
-        { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
 #endif
         { .txt = "Authentication", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_AUTHENTICATION } };
 
@@ -374,7 +365,16 @@ gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, 
 
     btn_data_t menubtns[] = { { .txt = "Display", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_DISPLAY },
         { .txt = "Idle Timeout", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_IDLE_TIMEOUT },
-        { .txt = "Bluetooth", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BLE } };
+        { .txt = "Bluetooth", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_BLE },
+#ifdef CONFIG_CHESS_APP
+        // Chess lives here rather than in the Options menu: on ESP32-S3 with a
+        // battery that menu is already full (4 items incl. USB Storage), and
+        // make_menu_activity allows at most 4. The Settings menu has room and is
+        // reachable in every state. NOTE: this is index 3, so the [1]/[2]
+        // rewrites below do not touch it.
+        { .txt = "Chess", .font = GUI_DEFAULT_FONT, .ev_id = BTN_SETTINGS_CHESS },
+#endif
+    };
 
     // If qr_mode_network_item status control passed, implies want that button visible
     // Otherwise show 'idle timeout' button
@@ -393,7 +393,7 @@ gui_activity_t* make_prefs_settings_activity(const bool initialised_and_locked, 
         menubtns[2].ev_id = BTN_SETTINGS_CHANGE_PIN;
     }
 
-    return make_menu_activity("Settings", hdrbtns, 2, menubtns, 3);
+    return make_menu_activity("Settings", hdrbtns, 2, menubtns, sizeof(menubtns) / sizeof(btn_data_t));
 }
 
 gui_activity_t* make_display_settings_activity(void)
